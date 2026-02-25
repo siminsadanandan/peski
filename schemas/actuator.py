@@ -22,6 +22,13 @@ class TdaMcpActuatorCaptureRequest(BaseModel):
     wrap_if_missing_header: bool = True
 
 
+class GrafanaAlertWebhookRequest(BaseModel):
+    message: Optional[str] = None
+    commonLabels: Optional[Dict[str, str]] = None
+    groupLabels: Optional[Dict[str, str]] = None
+    alerts: Optional[List[Dict[str, Any]]] = None
+
+
 class TdaMcpActuatorCaptureResponse(BaseModel):
     status: str
     saved_dir: str

@@ -1,6 +1,7 @@
 from .actuator import (
     ExternalActuatorCaptureRequest,
     ExternalActuatorCaptureResponse,
+    GrafanaAlertWebhookRequest,
     TdaMcpActuatorCaptureRequest,
     TdaMcpActuatorCaptureResponse,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "ExternalActuatorCaptureRequest",
     "ExternalActuatorCaptureResponse",
     "GcAdvice",
+    "GrafanaAlertWebhookRequest",
     "GcMetrics",
     "MultiThreadDumpAnalysis",
     "TdaMcpActuatorCaptureRequest",
