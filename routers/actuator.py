@@ -5,11 +5,12 @@ import time
 from datetime import datetime
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from schemas import (
     ExternalActuatorCaptureRequest,
     ExternalActuatorCaptureResponse,
+    GrafanaAlertWebhookRequest,
     TdaMcpActuatorCaptureRequest,
     TdaMcpActuatorCaptureResponse,
 )
@@ -37,6 +38,59 @@ ROUTER_PREFIX = ""
 ROUTER_TAGS = ["actuator"]
 
 router = APIRouter(prefix=ROUTER_PREFIX, tags=ROUTER_TAGS)
+
+
+def _labels_from_grafana(grafana: GrafanaAlertWebhookRequest) -> dict:
+    labels: dict = {}
+    if isinstance(grafana.groupLabels, dict):
+        labels.update(grafana.groupLabels)
+    if isinstance(grafana.commonLabels, dict):
+        labels.update(grafana.commonLabels)
+    if isinstance(grafana.alerts, list) and grafana.alerts:
+        first = grafana.alerts[0]
+        if isinstance(first, dict) and isinstance(first.get("labels"), dict):
+            labels.update(first["labels"])
+    return labels
+
+
+def _normalize_tda_capture_request(payload: dict) -> TdaMcpActuatorCaptureRequest:
+    direct = payload
+    parse_error = None
+
+    try:
+        return TdaMcpActuatorCaptureRequest(**direct)
+    except Exception as e:
+        parse_error = str(e)
+
+    grafana = GrafanaAlertWebhookRequest(**payload)
+    message_payload = grafana.message
+    if not message_payload:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Payload must either match TdaMcpActuatorCaptureRequest directly or include a JSON string in 'message'. "
+                f"Direct parse error: {parse_error}"
+            ),
+        )
+
+    try:
+        extracted = json.loads(message_payload)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Grafana message is not valid JSON: {e}")
+
+    if not isinstance(extracted, dict):
+        raise HTTPException(status_code=422, detail="Grafana message JSON must be an object.")
+
+    labels = _labels_from_grafana(grafana)
+    if labels.get("alertname") and not extracted.get("alertname"):
+        extracted["alertname"] = labels["alertname"]
+    if labels.get("instance") and not extracted.get("instance"):
+        extracted["instance"] = labels["instance"]
+
+    try:
+        return TdaMcpActuatorCaptureRequest(**extracted)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid capture payload inside Grafana message: {e}")
 
 
 @router.post("/v1/alerts/actuator/threaddump/capture", response_model=ExternalActuatorCaptureResponse)
@@ -99,7 +153,12 @@ def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -
 
 
 @router.post("/v1/alerts/actuator/threaddump/capture-tda-mcp", response_model=TdaMcpActuatorCaptureResponse)
-async def capture_actuator_threaddumps_tda_mcp(req: TdaMcpActuatorCaptureRequest) -> TdaMcpActuatorCaptureResponse:
+async def capture_actuator_threaddumps_tda_mcp(request: Request) -> TdaMcpActuatorCaptureResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object.")
+    req = _normalize_tda_capture_request(payload)
+
     _ensure_tda_prereqs()
     pathlib.Path(CAPTURE_OUT_DIR).mkdir(parents=True, exist_ok=True)
 
