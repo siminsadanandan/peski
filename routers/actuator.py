@@ -122,7 +122,18 @@ def _normalize_tda_capture_request(payload: dict) -> TdaMcpActuatorCaptureReques
         raise HTTPException(status_code=422, detail=f"Invalid capture payload inside Grafana message: {e}")
 
 
-@router.post("/v1/alerts/actuator/threaddump/capture", response_model=ExternalActuatorCaptureResponse)
+@router.post(
+    "/v1/alerts/actuator/threaddump/capture",
+    response_model=ExternalActuatorCaptureResponse,
+    summary="Capture thread dumps from actuator",
+    description="Fetch multiple thread dumps from an actuator endpoint, store raw dumps, and optionally run LLM analysis.",
+    response_description="Capture metadata including saved files and optional analysis status.",
+    responses={
+        200: {"description": "Thread dumps captured successfully."},
+        422: {"description": "Validation error in the request payload."},
+        502: {"description": "Failed to fetch dumps from actuator or downstream dependency failed."},
+    },
+)
 def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -> ExternalActuatorCaptureResponse:
     base_dir = pathlib.Path(CAPTURE_OUT_DIR)
     alertname = safe_name(req.alertname or "alert")
@@ -182,7 +193,22 @@ def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -
     )
 
 
-@router.post("/v1/alerts/actuator/threaddump/capture-tda-mcp", response_model=TdaMcpActuatorCaptureResponse)
+@router.post(
+    "/v1/alerts/actuator/threaddump/capture-tda-mcp",
+    response_model=TdaMcpActuatorCaptureResponse,
+    summary="Capture actuator dumps and analyze with TDA MCP",
+    description=(
+        "Accepts either a direct TDA capture payload or a Grafana webhook payload containing JSON in `message`, "
+        "captures actuator dumps, converts/combines them, then runs the TDA MCP pipeline."
+    ),
+    response_description="Capture and TDA analysis metadata including normalized output and raw tool responses.",
+    responses={
+        200: {"description": "Thread dumps captured and analyzed successfully."},
+        422: {"description": "Request payload is invalid or cannot be normalized."},
+        500: {"description": "Internal boundary marker guard failed while composing input."},
+        502: {"description": "Actuator fetch or TDA MCP dependency failed."},
+    },
+)
 async def capture_actuator_threaddumps_tda_mcp(request: Request) -> TdaMcpActuatorCaptureResponse:
     payload = await request.json()
     if not isinstance(payload, dict):
