@@ -9,7 +9,7 @@ from .common import enforce_5mb, safe_name
 from .db2z import quick_db2z_rules, split_sql_statements
 from .db2z_llm import db2z_chain, db2z_parser
 from .gc_llm import gc_chain, gc_parser
-from .llm_chains import (
+from .thread_llm import (
     td_chain,
     td_multi_chain,
     td_multi_parser,
