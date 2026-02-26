@@ -227,21 +227,25 @@ Success response: `ExternalActuatorCaptureResponse`.
 
 Errors: `422` validation error, `502` actuator fetch failure.
 
-### POST `/v1/alerts/actuator/threaddump/capture-tda-mcp`
-Purpose: Capture actuator dumps and run TDA MCP analysis.
+### POST `/v1/alerts/actuator/threaddump/capture-analyze`
+Purpose: Capture actuator dumps and process with MCP, LLM, or both.
 
 Request body:
 - Direct `TdaMcpActuatorCaptureRequest` JSON, or
 - Grafana-style webhook containing JSON string in `message`.
+- Use `processing_mode`:
+  - `mcp` (default)
+  - `llm`
+  - `both`
 
 Example (direct):
 ```bash
-curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-tda-mcp \
+curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
   -H 'Content-Type: application/json' \
-  -d '{"actuator_url":"https://example-host/actuator/threaddump","dump_count":3,"interval_sec":5,"auth_mode":"none","run_virtual":true}'
+  -d '{"actuator_url":"https://example-host/actuator/threaddump","dump_count":3,"interval_sec":5,"auth_mode":"none","processing_mode":"both","run_virtual":true}'
 ```
 
-Success response: `TdaMcpActuatorCaptureResponse`.
+Success response: `ActuatorCaptureAnalyzeResponse`.
 
 Errors: `422` invalid payload/normalization error, `500` boundary guard failure, `502` actuator or TDA MCP dependency failure.
 

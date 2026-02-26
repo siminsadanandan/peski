@@ -1,4 +1,5 @@
 from .actuator import (
+    ActuatorCaptureAnalyzeResponse,
     ExternalActuatorCaptureRequest,
     ExternalActuatorCaptureResponse,
     GrafanaAlertWebhookRequest,
@@ -24,6 +25,7 @@ from .thread_dump import (
 __all__ = [
     "Action",
     "Alternative",
+    "ActuatorCaptureAnalyzeResponse",
     "ContainerLimits",
     "Db2zDdlIssue",
     "Db2zDdlSuggestion",
