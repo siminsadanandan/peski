@@ -39,6 +39,35 @@ ROUTER_TAGS = ["actuator"]
 
 router = APIRouter(prefix=ROUTER_PREFIX, tags=ROUTER_TAGS)
 
+_RUN_DIR_TS_RE = re.compile(r"(\d{8}T\d{6}Z)$")
+
+
+def _safe_write_text(path: pathlib.Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text(content, encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8", errors="replace")
+
+
+def _pick_or_create_run_dir(base_dir: pathlib.Path, prefix: str, dump_count: int) -> pathlib.Path:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    candidates: List[pathlib.Path] = []
+    for p in base_dir.glob(f"{prefix}_*"):
+        if p.is_dir() and _RUN_DIR_TS_RE.search(p.name):
+            candidates.append(p)
+
+    candidates.sort(reverse=True)
+    for p in candidates:
+        if len(list(p.glob("dump*.json"))) < dump_count:
+            return p
+
+    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    run_dir = base_dir / f"{prefix}_{ts}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
 
 def _labels_from_grafana(grafana: GrafanaAlertWebhookRequest) -> dict:
     labels: dict = {}
@@ -95,26 +124,27 @@ def _normalize_tda_capture_request(payload: dict) -> TdaMcpActuatorCaptureReques
 
 @router.post("/v1/alerts/actuator/threaddump/capture", response_model=ExternalActuatorCaptureResponse)
 def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -> ExternalActuatorCaptureResponse:
-    pathlib.Path(CAPTURE_OUT_DIR).mkdir(parents=True, exist_ok=True)
-
-    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    base_dir = pathlib.Path(CAPTURE_OUT_DIR)
     alertname = safe_name(req.alertname or "alert")
     app_hint = safe_name(req.app_hint or "app")
     instance = safe_name(req.instance or "instance")
-    run_dir = pathlib.Path(CAPTURE_OUT_DIR) / f"{alertname}_{app_hint}_{instance}_{ts}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = _pick_or_create_run_dir(base_dir, f"{alertname}_{app_hint}_{instance}", req.dump_count)
 
     auth, headers = external_actuator_auth(req)
 
     files: List[str] = []
     for i in range(req.dump_count):
+        fn = run_dir / f"dump{i+1}.json"
+        if fn.exists():
+            files.append(str(fn))
+            continue
+
         try:
             body = fetch_actuator_threaddump(req.actuator_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Failed to fetch actuator threaddump from {req.actuator_url}: {e}")
 
-        fn = run_dir / f"dump{i+1}.json"
-        fn.write_text(body, encoding="utf-8", errors="replace")
+        _safe_write_text(fn, body)
         files.append(str(fn))
 
         if i < req.dump_count - 1:
@@ -134,11 +164,11 @@ def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -
                 "dumps_block": dumps_block,
                 "format_instructions": td_multi_parser.get_format_instructions(),
             })
-            (run_dir / "analysis.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
+            _safe_write_text(run_dir / "analysis.json", json.dumps(out, indent=2))
             analysis_saved = True
         except Exception as e:
             analysis_error = str(e)
-            (run_dir / "analysis_error.txt").write_text(analysis_error, encoding="utf-8")
+            _safe_write_text(run_dir / "analysis_error.txt", analysis_error)
 
     return ExternalActuatorCaptureResponse(
         status="captured",
@@ -160,14 +190,11 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> TdaMcpActuat
     req = _normalize_tda_capture_request(payload)
 
     _ensure_tda_prereqs()
-    pathlib.Path(CAPTURE_OUT_DIR).mkdir(parents=True, exist_ok=True)
-
-    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    base_dir = pathlib.Path(CAPTURE_OUT_DIR)
     alertname = safe_name(req.alertname or "alert")
     app_hint = safe_name(req.app_hint or "app")
     instance = safe_name(req.instance or "instance")
-    run_dir = pathlib.Path(CAPTURE_OUT_DIR) / f"{alertname}_{app_hint}_{instance}_{ts}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = _pick_or_create_run_dir(base_dir, f"{alertname}_{app_hint}_{instance}", req.dump_count)
 
     auth, headers = external_actuator_auth_mode(req.auth_mode, req.user, req.password, req.token, req.authorization_header)
 
@@ -176,13 +203,23 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> TdaMcpActuat
     segments: List[str] = []
 
     for i in range(req.dump_count):
-        try:
-            body = fetch_actuator_threaddump(req.actuator_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to fetch actuator threaddump from {req.actuator_url}: {e}")
-
         raw_path = run_dir / f"dump{i+1}.json"
-        raw_path.write_text(body, encoding="utf-8", errors="replace")
+        conv_path = run_dir / f"dump{i+1}.log"
+        if conv_path.exists():
+            if raw_path.exists():
+                raw_files.append(raw_path.name)
+            converted_files.append(conv_path.name)
+            segments.append(conv_path.read_text(encoding="utf-8", errors="replace"))
+            continue
+
+        if raw_path.exists():
+            body = raw_path.read_text(encoding="utf-8", errors="replace")
+        else:
+            try:
+                body = fetch_actuator_threaddump(req.actuator_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"Failed to fetch actuator threaddump from {req.actuator_url}: {e}")
+            _safe_write_text(raw_path, body)
         raw_files.append(raw_path.name)
 
         extracted = _maybe_extract_actuator_dump_text(body)
@@ -193,10 +230,8 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> TdaMcpActuat
             wrap=req.wrap_if_missing_header,
         )
 
-        conv_path = run_dir / f"dump{i+1}.log"
-        conv_path.write_text(seg, encoding="utf-8", errors="replace")
+        _safe_write_text(conv_path, seg)
         converted_files.append(conv_path.name)
-
         segments.append(seg)
 
         if i < req.dump_count - 1:
@@ -207,8 +242,9 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> TdaMcpActuat
     if injected < req.dump_count:
         raise HTTPException(status_code=500, detail=f"Internal error: expected >= {req.dump_count} <EndOfDump> markers, got {injected}")
 
+    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     tda_in_path = pathlib.Path(TDA_TMP_DIR) / f"{ts}_actuator_{req.dump_count}.log"
-    tda_in_path.write_text(combined, encoding="utf-8", errors="replace")
+    _safe_write_text(tda_in_path, combined)
 
     tools = list(TDA_DEFAULT_PIPELINE)
     if not req.run_virtual and "analyze_virtual_threads" in tools:
@@ -222,9 +258,9 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> TdaMcpActuat
     normalized = _normalize_tda_pipeline_output(out)
 
     try:
-        (run_dir / "tda_input_combined.log").write_text(combined, encoding="utf-8", errors="replace")
-        (run_dir / "tda_analysis_raw.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
-        (run_dir / "tda_analysis.txt").write_text(normalized, encoding="utf-8")
+        _safe_write_text(run_dir / "tda_input_combined.log", combined)
+        _safe_write_text(run_dir / "tda_analysis_raw.json", json.dumps(out, indent=2))
+        _safe_write_text(run_dir / "tda_analysis.txt", normalized)
     except Exception:
         pass
 
