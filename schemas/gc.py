@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ContainerLimits(BaseModel):
@@ -14,9 +14,9 @@ class Evidence(BaseModel):
 
 
 class GcMetrics(BaseModel):
-    jvm: str
-    gc: str
-    heap_mb: int
+    jvm: str = Field(..., description="JVM distribution/version identifier.", examples=["OpenJDK 21"])
+    gc: str = Field(..., description="Garbage collector name.", examples=["G1GC"])
+    heap_mb: int = Field(..., description="Configured max heap size in MB.", examples=[4096])
     young_mb: Optional[int] = None
     pause_p95_ms: Optional[float] = None
     pause_p99_ms: Optional[float] = None
@@ -28,8 +28,8 @@ class GcMetrics(BaseModel):
     full_gc_count: Optional[int] = None
     cpu_cores: Optional[int] = None
     container_limits: Optional[ContainerLimits] = None
-    flags: Optional[List[str]] = None
-    workload_hint: Optional[str] = None
+    flags: Optional[List[str]] = Field(default=None, description="Current JVM flag list.", examples=[["-XX:+UseG1GC"]])
+    workload_hint: Optional[str] = Field(default=None, description="Short workload context for recommendations.")
     evidence: Optional[Evidence] = None
 
 
