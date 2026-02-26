@@ -8,11 +8,11 @@ from typing import List
 from fastapi import APIRouter, HTTPException, Request
 
 from schemas import (
+    ActuatorCaptureAnalyzeResponse,
     ExternalActuatorCaptureRequest,
     ExternalActuatorCaptureResponse,
     GrafanaAlertWebhookRequest,
     TdaMcpActuatorCaptureRequest,
-    TdaMcpActuatorCaptureResponse,
 )
 from services import (
     CAPTURE_HTTP_TIMEOUT_SEC,
@@ -194,22 +194,22 @@ def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -
 
 
 @router.post(
-    "/v1/alerts/actuator/threaddump/capture-tda-mcp",
-    response_model=TdaMcpActuatorCaptureResponse,
-    summary="Capture actuator dumps and analyze with TDA MCP",
+    "/v1/alerts/actuator/threaddump/capture-analyze",
+    response_model=ActuatorCaptureAnalyzeResponse,
+    summary="Capture actuator dumps and analyze",
     description=(
-        "Accepts either a direct TDA capture payload or a Grafana webhook payload containing JSON in `message`, "
-        "captures actuator dumps, converts/combines them, then runs the TDA MCP pipeline."
+        "Accepts either a direct capture payload or a Grafana webhook payload containing JSON in `message`, "
+        "captures actuator dumps, then processes them with MCP, LLM, or both based on processing_mode."
     ),
-    response_description="Capture and TDA analysis metadata including normalized output and raw tool responses.",
+    response_description="Capture metadata with optional MCP and/or LLM analysis outputs.",
     responses={
-        200: {"description": "Thread dumps captured and analyzed successfully."},
+        200: {"description": "Thread dumps captured and processed successfully."},
         422: {"description": "Request payload is invalid or cannot be normalized."},
         500: {"description": "Internal boundary marker guard failed while composing input."},
-        502: {"description": "Actuator fetch or TDA MCP dependency failed."},
+        502: {"description": "Actuator fetch or downstream dependency failed."},
     },
 )
-async def capture_actuator_threaddumps_tda_mcp(request: Request) -> TdaMcpActuatorCaptureResponse:
+async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCaptureAnalyzeResponse:
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="Request body must be a JSON object.")
@@ -224,22 +224,24 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> TdaMcpActuat
 
     auth, headers = external_actuator_auth_mode(req.auth_mode, req.user, req.password, req.token, req.authorization_header)
 
+    processing_mode = req.processing_mode
+    run_mcp = processing_mode in {"mcp", "both"}
+    run_llm = processing_mode in {"llm", "both"}
+
     raw_files: List[str] = []
     converted_files: List[str] = []
     segments: List[str] = []
+    llm_dumps: List[str] = []
 
     for i in range(req.dump_count):
         raw_path = run_dir / f"dump{i+1}.json"
         conv_path = run_dir / f"dump{i+1}.log"
-        if conv_path.exists():
-            if raw_path.exists():
-                raw_files.append(raw_path.name)
-            converted_files.append(conv_path.name)
-            segments.append(conv_path.read_text(encoding="utf-8", errors="replace"))
-            continue
 
         if raw_path.exists():
             body = raw_path.read_text(encoding="utf-8", errors="replace")
+        elif conv_path.exists():
+            body = conv_path.read_text(encoding="utf-8", errors="replace")
+            _safe_write_text(raw_path, body)
         else:
             try:
                 body = fetch_actuator_threaddump(req.actuator_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
@@ -248,59 +250,115 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> TdaMcpActuat
             _safe_write_text(raw_path, body)
         raw_files.append(raw_path.name)
 
-        extracted = _maybe_extract_actuator_dump_text(body)
-        extracted = _normalize_text(extracted)
-        seg = _wrap_if_missing_hotspot_header(
-            extracted,
-            label=f"{i+1}:{raw_path.name}",
-            wrap=req.wrap_if_missing_header,
-        )
+        if run_llm:
+            llm_dumps.append(body)
 
-        _safe_write_text(conv_path, seg)
-        converted_files.append(conv_path.name)
-        segments.append(seg)
+        if run_mcp:
+            if conv_path.exists():
+                seg = conv_path.read_text(encoding="utf-8", errors="replace")
+            else:
+                extracted = _maybe_extract_actuator_dump_text(body)
+                extracted = _normalize_text(extracted)
+                seg = _wrap_if_missing_hotspot_header(
+                    extracted,
+                    label=f"{i+1}:{raw_path.name}",
+                    wrap=req.wrap_if_missing_header,
+                )
+                _safe_write_text(conv_path, seg)
+
+            converted_files.append(conv_path.name)
+            segments.append(seg)
 
         if i < req.dump_count - 1:
             time.sleep(req.interval_sec)
 
-    combined = "\n".join(segments)
-    injected = len(re.findall(r"(?m)^\s*<EndOfDump>\s*$", combined))
-    if injected < req.dump_count:
-        raise HTTPException(status_code=500, detail=f"Internal error: expected >= {req.dump_count} <EndOfDump> markers, got {injected}")
+    mcp_saved_as = None
+    mcp_tool_names = None
+    normalized = None
+    tda_raw = None
+    llm_analysis = None
+    llm_analysis_saved = False
+    llm_analysis_error = None
+    notes: List[str] = []
 
-    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    tda_in_path = pathlib.Path(TDA_TMP_DIR) / f"{ts}_actuator_{req.dump_count}.log"
-    _safe_write_text(tda_in_path, combined)
+    if run_mcp:
+        combined = "\n".join(segments)
+        injected = len(re.findall(r"(?m)^\s*<EndOfDump>\s*$", combined))
+        if injected < req.dump_count:
+            raise HTTPException(status_code=500, detail=f"Internal error: expected >= {req.dump_count} <EndOfDump> markers, got {injected}")
 
-    tools = list(TDA_DEFAULT_PIPELINE)
-    if not req.run_virtual and "analyze_virtual_threads" in tools:
-        tools.remove("analyze_virtual_threads")
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        tda_in_path = pathlib.Path(TDA_TMP_DIR) / f"{ts}_actuator_{req.dump_count}.log"
+        _safe_write_text(tda_in_path, combined)
+        mcp_saved_as = str(tda_in_path)
 
-    try:
-        out = await tda_mcp_run_pipeline(str(tda_in_path), tools)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"TDA MCP invocation failed: {e}")
+        tools = list(TDA_DEFAULT_PIPELINE)
+        if not req.run_virtual and "analyze_virtual_threads" in tools:
+            tools.remove("analyze_virtual_threads")
 
-    normalized = _normalize_tda_pipeline_output(out)
+        try:
+            tda_raw = await tda_mcp_run_pipeline(str(tda_in_path), tools)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"TDA MCP invocation failed: {e}")
 
-    try:
-        _safe_write_text(run_dir / "tda_input_combined.log", combined)
-        _safe_write_text(run_dir / "tda_analysis_raw.json", json.dumps(out, indent=2))
-        _safe_write_text(run_dir / "tda_analysis.txt", normalized)
-    except Exception:
-        pass
+        normalized = _normalize_tda_pipeline_output(tda_raw)
+        mcp_tool_names = tda_raw.get("tool_names")
+        notes.append(
+            f"MCP pipeline completed for {req.dump_count} dump(s); tools={tools}."
+        )
+        try:
+            _safe_write_text(run_dir / "tda_input_combined.log", combined)
+            _safe_write_text(run_dir / "tda_analysis_raw.json", json.dumps(tda_raw, indent=2))
+            _safe_write_text(run_dir / "tda_analysis.txt", normalized)
+        except Exception:
+            pass
 
-    return TdaMcpActuatorCaptureResponse(
-        status="captured+analyzed",
+    if run_llm:
+        try:
+            dumps_block = "\n\n===== NEXT DUMP =====\n\n".join([f"### dump[{i}]\n{d}" for i, d in enumerate(llm_dumps)])
+            llm_out = td_multi_chain.invoke({
+                "app_hint": req.app_hint or "",
+                "times_utc": [],
+                "top_n": int(req.top_n),
+                "dump_count": len(llm_dumps),
+                "dumps_block": dumps_block,
+                "format_instructions": td_multi_parser.get_format_instructions(),
+            })
+            if hasattr(llm_out, "model_dump"):
+                llm_analysis = llm_out.model_dump()
+            elif hasattr(llm_out, "dict"):
+                llm_analysis = llm_out.dict()
+            else:
+                llm_analysis = llm_out
+            llm_analysis_saved = True
+            notes.append("LLM multi-dump analysis completed.")
+            try:
+                _safe_write_text(run_dir / "analysis_llm.json", json.dumps(llm_analysis, indent=2))
+            except Exception:
+                pass
+        except Exception as e:
+            llm_analysis_error = str(e)
+            notes.append("LLM analysis failed.")
+            try:
+                _safe_write_text(run_dir / "analysis_llm_error.txt", llm_analysis_error)
+            except Exception:
+                pass
+
+    return ActuatorCaptureAnalyzeResponse(
+        status="captured+processed",
         saved_dir=str(run_dir),
         actuator_url=req.actuator_url,
         files=raw_files,
         converted_files=converted_files,
         dump_count=req.dump_count,
         interval_sec=req.interval_sec,
-        tda_saved_as=str(tda_in_path),
-        tda_tool_names=out["tool_names"],
+        processing_mode=processing_mode,
+        mcp_saved_as=mcp_saved_as,
+        mcp_tool_names=mcp_tool_names,
         normalized_text=normalized,
-        tda_raw=out,
-        notes=f"Fetched {req.dump_count} dump(s) from actuator, saved raw (.json) + converted (.log), injected <EndOfDump> (count={injected}). parse_log then pipeline={tools}.",
+        tda_raw=tda_raw,
+        llm_analysis=llm_analysis,
+        llm_analysis_saved=llm_analysis_saved,
+        llm_analysis_error=llm_analysis_error,
+        notes=" ".join(notes) if notes else None,
     )

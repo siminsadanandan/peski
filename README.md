@@ -66,7 +66,7 @@ Full route documentation is in [docs/API.md](docs/API.md).
   - `POST /v1/jvm/threaddump/analyze-tda-mcp-multi-file`
 - actuator
   - `POST /v1/alerts/actuator/threaddump/capture`
-  - `POST /v1/alerts/actuator/threaddump/capture-tda-mcp`
+  - `POST /v1/alerts/actuator/threaddump/capture-analyze`
 
 ## Troubleshooting import errors
 

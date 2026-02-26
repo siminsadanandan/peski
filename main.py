@@ -43,6 +43,8 @@ _SCHEMA_PATCHES = {
             "example": "https://example-host/actuator/threaddump",
         },
         "auth_mode": {"description": "Authentication mode: none|basic|bearer|header.", "example": "none"},
+        "processing_mode": {"description": "Post-capture processing mode: mcp, llm, or both.", "example": "both"},
+        "top_n": {"description": "Top findings count used by LLM analysis.", "example": 15},
         "run_virtual": {"description": "Whether virtual-thread analysis should run.", "example": True},
         "wrap_if_missing_header": {"description": "Wrap non-HotSpot dump text with a synthetic header.", "example": True},
     },
@@ -52,9 +54,11 @@ _SCHEMA_PATCHES = {
             "example": "Model invocation timed out",
         }
     },
-    "TdaMcpActuatorCaptureResponse": {
+    "ActuatorCaptureAnalyzeResponse": {
         "normalized_text": {"description": "Human-readable normalized TDA analysis summary."},
         "tda_raw": {"description": "Raw tool output payload from TDA MCP pipeline."},
+        "llm_analysis": {"description": "Structured LLM multi-dump analysis output."},
+        "llm_analysis_error": {"description": "LLM processing failure reason when available."},
     },
 }
 
