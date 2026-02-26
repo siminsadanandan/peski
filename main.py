@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
-from fastapi.routing import APIRoute
 
 from routers.actuator import router as actuator_router
 from routers.db2z import router as db2z_router
@@ -28,33 +27,6 @@ app.include_router(thread_llm_router)
 app.include_router(tda_router)
 app.include_router(actuator_router)
 
-
-_ROUTE_DOCS = {
-    ("POST", "/v1/alerts/actuator/threaddump/capture"): {
-        "summary": "Capture thread dumps from actuator",
-        "description": "Fetch multiple thread dumps from an actuator endpoint, store raw dumps, and optionally run LLM analysis.",
-        "response_description": "Capture metadata including saved files and optional analysis status.",
-        "responses": {
-            200: {"description": "Thread dumps captured successfully."},
-            422: {"description": "Validation error in the request payload."},
-            502: {"description": "Failed to fetch dumps from actuator or downstream dependency failed."},
-        },
-    },
-    ("POST", "/v1/alerts/actuator/threaddump/capture-tda-mcp"): {
-        "summary": "Capture actuator dumps and analyze with TDA MCP",
-        "description": (
-            "Accepts either a direct TDA capture payload or a Grafana webhook payload containing JSON in `message`, "
-            "captures actuator dumps, converts/combines them, then runs the TDA MCP pipeline."
-        ),
-        "response_description": "Capture and TDA analysis metadata including normalized output and raw tool responses.",
-        "responses": {
-            200: {"description": "Thread dumps captured and analyzed successfully."},
-            422: {"description": "Request payload is invalid or cannot be normalized."},
-            500: {"description": "Internal boundary marker guard failed while composing input."},
-            502: {"description": "Actuator fetch or TDA MCP dependency failed."},
-        },
-    },
-}
 
 _SCHEMA_PATCHES = {
     "ExternalActuatorCaptureRequest": {
@@ -87,21 +59,6 @@ _SCHEMA_PATCHES = {
 }
 
 
-def _apply_route_docs() -> None:
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
-        for method in (route.methods or set()):
-            docs = _ROUTE_DOCS.get((method, route.path))
-            if not docs:
-                continue
-            route.summary = docs["summary"]
-            route.description = docs["description"]
-            route.response_description = docs["response_description"]
-            route.responses = docs["responses"]
-    app.openapi_schema = None
-
-
 def _apply_schema_patches(openapi_schema: dict) -> None:
     components = openapi_schema.get("components", {}).get("schemas", {})
     for schema_name, props in _SCHEMA_PATCHES.items():
@@ -129,7 +86,6 @@ def custom_openapi():
     return app.openapi_schema
 
 
-_apply_route_docs()
 app.openapi = custom_openapi
 
 
