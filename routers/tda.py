@@ -33,7 +33,17 @@ ROUTER_TAGS = ["tda-mcp"]
 router = APIRouter(prefix=ROUTER_PREFIX, tags=ROUTER_TAGS)
 
 
-@router.get("/v1/tda/mcp/tools", response_model=List[TdaMcpTool])
+@router.get(
+    "/v1/tda/mcp/tools",
+    response_model=List[TdaMcpTool],
+    summary="List available TDA MCP tools",
+    description="Return the available tools exposed by the configured TDA MCP server.",
+    response_description="List of tool metadata including name, description, and optional input schema.",
+    responses={
+        200: {"description": "TDA MCP tools listed successfully."},
+        502: {"description": "Failed to communicate with TDA MCP dependency."},
+    },
+)
 async def tda_tools() -> List[TdaMcpTool]:
     _ensure_tda_prereqs()
     try:
@@ -52,7 +62,20 @@ async def tda_tools() -> List[TdaMcpTool]:
         raise HTTPException(status_code=502, detail=f"Failed to list TDA MCP tools: {e}")
 
 
-@router.post("/v1/jvm/threaddump/analyze-tda-mcp", response_model=TdaMcpAnalyzeFileResponse)
+@router.post(
+    "/v1/jvm/threaddump/analyze-tda-mcp",
+    response_model=TdaMcpAnalyzeFileResponse,
+    summary="Analyze thread dump text with TDA MCP",
+    description="Analyze one raw thread dump text payload using TDA MCP parse/pipeline tools.",
+    response_description="TDA analysis output including normalized text and raw tool responses.",
+    responses={
+        200: {"description": "TDA MCP analysis completed successfully."},
+        400: {"description": "Thread dump text is empty."},
+        413: {"description": "Thread dump text exceeds max_chars limit."},
+        422: {"description": "Validation error in the request payload."},
+        502: {"description": "TDA MCP invocation failed."},
+    },
+)
 async def analyze_tda_mcp_text(req: TdaMcpAnalyzeTextRequest) -> TdaMcpAnalyzeFileResponse:
     _ensure_tda_prereqs()
 
@@ -90,10 +113,21 @@ async def analyze_tda_mcp_text(req: TdaMcpAnalyzeTextRequest) -> TdaMcpAnalyzeFi
     )
 
 
-@router.post("/v1/jvm/threaddump/analyze-tda-mcp-log", response_model=TdaMcpAnalyzeFileResponse)
+@router.post(
+    "/v1/jvm/threaddump/analyze-tda-mcp-log",
+    response_model=TdaMcpAnalyzeFileResponse,
+    summary="Analyze existing log path with TDA MCP",
+    description="Analyze a thread dump log already present on the server/container filesystem.",
+    response_description="TDA analysis output for the provided log path.",
+    responses={
+        200: {"description": "TDA MCP log-path analysis completed successfully."},
+        422: {"description": "Validation error in multipart/form-data parameters."},
+        502: {"description": "TDA MCP invocation failed."},
+    },
+)
 async def analyze_tda_mcp_log(
     path: str = Form(..., description="Absolute path to a log file inside this container/VM"),
-    run_virtual: bool = Form(True),
+    run_virtual: bool = Form(True, description="Whether to include virtual-thread analysis tools."),
 ) -> TdaMcpAnalyzeFileResponse:
     _ensure_tda_prereqs()
 
@@ -118,10 +152,22 @@ async def analyze_tda_mcp_log(
     )
 
 
-@router.post("/v1/jvm/threaddump/analyze-tda-mcp-file", response_model=TdaMcpAnalyzeFileResponse)
+@router.post(
+    "/v1/jvm/threaddump/analyze-tda-mcp-file",
+    response_model=TdaMcpAnalyzeFileResponse,
+    summary="Analyze uploaded thread dump file with TDA MCP",
+    description="Upload one thread dump file and analyze it using TDA MCP parse/pipeline tools.",
+    response_description="TDA analysis output for the uploaded file.",
+    responses={
+        200: {"description": "TDA MCP file analysis completed successfully."},
+        413: {"description": "Uploaded file exceeds size limit."},
+        422: {"description": "Validation error in multipart/form-data parameters."},
+        502: {"description": "TDA MCP invocation failed."},
+    },
+)
 async def analyze_tda_mcp_file(
-    file: UploadFile = File(...),
-    run_virtual: bool = Form(True),
+    file: UploadFile = File(..., description="Thread dump log file (UTF-8 or Latin-1)."),
+    run_virtual: bool = Form(True, description="Whether to include virtual-thread analysis tools."),
 ) -> TdaMcpAnalyzeFileResponse:
     _ensure_tda_prereqs()
 
@@ -155,10 +201,24 @@ async def analyze_tda_mcp_file(
     )
 
 
-@router.post("/v1/jvm/threaddump/analyze-tda-mcp-multi-file", response_model=TdaMcpAnalyzeMultiFileResponse)
+@router.post(
+    "/v1/jvm/threaddump/analyze-tda-mcp-multi-file",
+    response_model=TdaMcpAnalyzeMultiFileResponse,
+    summary="Analyze multiple thread dump files with TDA MCP",
+    description="Upload two or more thread dump files, combine with boundaries, and analyze as one timeline.",
+    response_description="TDA analysis output for the combined multi-file input.",
+    responses={
+        200: {"description": "TDA MCP multi-file analysis completed successfully."},
+        400: {"description": "At least two files are required."},
+        413: {"description": "Total uploaded payload exceeds aggregate size limit."},
+        422: {"description": "Validation error in multipart/form-data parameters."},
+        500: {"description": "Internal boundary injection guard failed."},
+        502: {"description": "TDA MCP invocation failed."},
+    },
+)
 async def analyze_tda_mcp_multi_file(
-    files: List[UploadFile] = File(...),
-    run_virtual: bool = Form(True),
+    files: List[UploadFile] = File(..., description="Two or more thread dump files."),
+    run_virtual: bool = Form(True, description="Whether to include virtual-thread analysis tools."),
 ) -> TdaMcpAnalyzeMultiFileResponse:
     _ensure_tda_prereqs()
 

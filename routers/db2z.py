@@ -1,6 +1,6 @@
 from typing import List
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
 
 from schemas import (
     Db2zDdlIssue,
@@ -17,8 +17,21 @@ ROUTER_TAGS = ["db2z"]
 router = APIRouter(prefix=ROUTER_PREFIX, tags=ROUTER_TAGS)
 
 
-@router.post("/v1/db2z/ddl/validate", response_model=Db2zDdlValidationResponse)
-def validate_db2z_ddl(req: Db2zDdlValidationRequest) -> Db2zDdlValidationResponse:
+@router.post(
+    "/v1/db2z/ddl/validate",
+    response_model=Db2zDdlValidationResponse,
+    summary="Validate DB2 z/OS DDL from JSON",
+    description="Validate one or more DDL statements from a JSON body and return issues and suggestions for DB2 z/OS compatibility.",
+    response_description="Validation summary with issues, suggestions, and optionally rewritten DDL statements.",
+    responses={
+        200: {"description": "DDL validation completed successfully."},
+        422: {"description": "Validation error in the request payload."},
+        502: {"description": "Downstream analysis dependency failed."},
+    },
+)
+def validate_db2z_ddl(
+    req: Db2zDdlValidationRequest = Body(..., description="DDL validation payload."),
+) -> Db2zDdlValidationResponse:
     issues1, suggestions1, rewritten = quick_db2z_rules(req.ddls)
     ddls_for_llm = rewritten if req.include_rewritten else req.ddls
     ddls_block = "\n\n".join([f"-- stmt[{idx}]\n{stmt}" for idx, stmt in enumerate(ddls_for_llm)])
@@ -50,12 +63,25 @@ def validate_db2z_ddl(req: Db2zDdlValidationRequest) -> Db2zDdlValidationRespons
     )
 
 
-@router.post("/v1/db2z/ddl/validate-file", response_model=Db2zDdlValidationResponse)
+@router.post(
+    "/v1/db2z/ddl/validate-file",
+    response_model=Db2zDdlValidationResponse,
+    summary="Validate DB2 z/OS DDL from file upload",
+    description="Upload a SQL file, split it into DDL statements, and validate compatibility with DB2 z/OS.",
+    response_description="Validation summary for uploaded DDL content.",
+    responses={
+        200: {"description": "DDL file validated successfully."},
+        400: {"description": "No DDL statements were found in the uploaded file."},
+        413: {"description": "Uploaded file exceeds size limit."},
+        422: {"description": "Validation error in multipart/form-data parameters."},
+        502: {"description": "Downstream analysis dependency failed."},
+    },
+)
 async def validate_db2z_ddl_file(
-    file: UploadFile = File(...),
-    source: str = "db2luw",
-    include_rewritten: bool = True,
-    llm_batch_size: int = 20,
+    file: UploadFile = File(..., description="SQL file containing DDL statements to validate."),
+    source: str = Query("db2luw", description="Source dialect hint (for example: db2luw)."),
+    include_rewritten: bool = Query(True, description="Include rewritten DDL candidates in the response."),
+    llm_batch_size: int = Query(20, ge=1, le=200, description="Batch size for LLM validation across many statements."),
 ) -> Db2zDdlValidationResponse:
     content = await file.read()
     enforce_5mb(content)

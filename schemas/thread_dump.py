@@ -4,10 +4,14 @@ from pydantic import BaseModel, Field
 
 
 class ThreadDumpRequest(BaseModel):
-    dump: str = Field(..., description="Raw JVM thread dump text")
-    app_hint: Optional[str] = None
-    time_utc: Optional[str] = Field(default=None, description="Metadata only")
-    top_n: int = Field(default=15, ge=5, le=50)
+    dump: str = Field(
+        ...,
+        description="Raw JVM thread dump text.",
+        examples=['"main" #1 prio=5 os_prio=0 tid=0x00007f...'],
+    )
+    app_hint: Optional[str] = Field(default=None, description="Optional application name/context hint.")
+    time_utc: Optional[str] = Field(default=None, description="Optional dump timestamp metadata (UTC).", examples=["2026-02-26T08:00:00Z"])
+    top_n: int = Field(default=15, ge=5, le=50, description="How many top hotspots/groups to emphasize in output.")
 
 
 class ThreadGroup(BaseModel):

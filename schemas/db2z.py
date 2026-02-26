@@ -4,9 +4,21 @@ from pydantic import BaseModel, Field
 
 
 class Db2zDdlValidationRequest(BaseModel):
-    ddls: List[str] = Field(..., min_items=1)
-    source: Optional[str] = Field(default="db2luw")
-    include_rewritten: bool = Field(default=True)
+    ddls: List[str] = Field(
+        ...,
+        min_items=1,
+        description="List of DDL statements to validate.",
+        examples=[["CREATE TABLE T1 (ID BIGINT NOT NULL PRIMARY KEY);"]],
+    )
+    source: Optional[str] = Field(
+        default="db2luw",
+        description="Source dialect hint used by the analyzer.",
+        examples=["db2luw"],
+    )
+    include_rewritten: bool = Field(
+        default=True,
+        description="Whether rewritten compatibility candidates should be included in the response.",
+    )
 
 
 class Db2zDdlIssue(BaseModel):
