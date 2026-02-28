@@ -7,6 +7,10 @@
   - `tda-mcp` multi-file endpoint: ~5MB total across all files.
   - `db2z` file endpoint: ~5MB.
 - Actuator auth modes: `none`, `basic`, `bearer`, `header`.
+- Additional trace prerequisites:
+  - `ss`: requires `iproute2` package.
+  - `netstat`: requires `net-tools` package.
+  - `tcpdump`: requires `tcpdump` package and typically `NET_RAW`/`NET_ADMIN` capabilities.
 - TDA endpoints require TDA MCP prerequisites configured in runtime environment.
 
 ## gc
@@ -215,6 +219,7 @@ Errors: `400` fewer than 2 files, `413` total upload too large, `500` boundary i
 Purpose: Fetch thread dumps from Spring actuator and optionally run analysis.
 
 Request body: `ExternalActuatorCaptureRequest`.
+- Optional `prom_url` captures Prometheus metrics snapshots per dump as `dumpN.prom.txt`.
 
 Example:
 ```bash
@@ -233,6 +238,16 @@ Purpose: Capture actuator dumps and process with MCP, LLM, or both.
 Request body:
 - Direct `TdaMcpActuatorCaptureRequest` JSON, or
 - Grafana-style webhook containing JSON string in `message`.
+- Optional `prom_url` captures Prometheus metrics snapshots per dump as `dumpN.prom.txt`.
+- Optional `additional_trace_options` captures extra diagnostics per dump:
+  - `ss`
+  - `netstat`
+  - `tcpdump`
+  Example: `ss,netstat`
+- Optional trace controls:
+  - `trace_timeout_sec` (default `8`)
+  - `trace_parallel` (default `false`)
+  - `tcpdump_packet_count` (default `50`)
 - Use `processing_mode`:
   - `mcp` (default)
   - `llm`

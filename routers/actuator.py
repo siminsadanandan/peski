@@ -2,6 +2,7 @@ import json
 import pathlib
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import List
 
@@ -27,6 +28,8 @@ from services import (
     external_actuator_auth,
     external_actuator_auth_mode,
     fetch_actuator_threaddump,
+    fetch_http_text,
+    run_trace_command,
     safe_name,
     tda_mcp_run_pipeline,
     td_multi_chain,
@@ -40,6 +43,7 @@ ROUTER_TAGS = ["actuator"]
 router = APIRouter(prefix=ROUTER_PREFIX, tags=ROUTER_TAGS)
 
 _RUN_DIR_TS_RE = re.compile(r"(\d{8}T\d{6}Z)$")
+_TRACE_OPTIONS = {"ss", "netstat", "tcpdump"}
 
 
 def _safe_write_text(path: pathlib.Path, content: str) -> None:
@@ -49,6 +53,66 @@ def _safe_write_text(path: pathlib.Path, content: str) -> None:
     except FileNotFoundError:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8", errors="replace")
+
+
+def _parse_trace_options(raw: str) -> List[str]:
+    if not raw:
+        return []
+    out: List[str] = []
+    for part in raw.split(","):
+        opt = part.strip().lower()
+        if not opt:
+            continue
+        if opt not in _TRACE_OPTIONS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unsupported additional_trace_options value '{opt}'. Supported: ss,netstat,tcpdump",
+            )
+        if opt not in out:
+            out.append(opt)
+    return out
+
+
+def _collect_trace_outputs_for_dump(
+    run_dir: pathlib.Path,
+    dump_index: int,
+    trace_options: List[str],
+    trace_timeout_sec: int,
+    tcpdump_packet_count: int,
+    trace_parallel: bool,
+) -> List[str]:
+    out_files: List[str] = []
+    if not trace_options:
+        return out_files
+
+    def _run_one(opt: str) -> str:
+        trace_path = run_dir / f"dump{dump_index}.{opt}.txt"
+        err_path = run_dir / f"dump{dump_index}.{opt}.error.txt"
+        if trace_path.exists():
+            return trace_path.name
+        if err_path.exists():
+            return err_path.name
+        try:
+            trace_out = run_trace_command(
+                opt,
+                timeout_sec=trace_timeout_sec,
+                tcpdump_packet_count=tcpdump_packet_count,
+            )
+            _safe_write_text(trace_path, trace_out)
+            return trace_path.name
+        except Exception as e:
+            _safe_write_text(err_path, str(e))
+            return err_path.name
+
+    if trace_parallel and len(trace_options) > 1:
+        with ThreadPoolExecutor(max_workers=min(len(trace_options), 4)) as pool:
+            futures = [pool.submit(_run_one, opt) for opt in trace_options]
+            for fut in as_completed(futures):
+                out_files.append(fut.result())
+    else:
+        for opt in trace_options:
+            out_files.append(_run_one(opt))
+    return out_files
 
 
 def _pick_or_create_run_dir(base_dir: pathlib.Path, prefix: str, dump_count: int) -> pathlib.Path:
@@ -144,19 +208,26 @@ def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -
     auth, headers = external_actuator_auth(req)
 
     files: List[str] = []
+    prom_files: List[str] = []
     for i in range(req.dump_count):
         fn = run_dir / f"dump{i+1}.json"
-        if fn.exists():
-            files.append(str(fn))
-            continue
-
-        try:
-            body = fetch_actuator_threaddump(req.actuator_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to fetch actuator threaddump from {req.actuator_url}: {e}")
-
-        _safe_write_text(fn, body)
+        if not fn.exists():
+            try:
+                body = fetch_actuator_threaddump(req.actuator_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"Failed to fetch actuator threaddump from {req.actuator_url}: {e}")
+            _safe_write_text(fn, body)
         files.append(str(fn))
+
+        if req.prom_url:
+            prom_path = run_dir / f"dump{i+1}.prom.txt"
+            if not prom_path.exists():
+                try:
+                    prom_body = fetch_http_text(req.prom_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
+                except Exception as e:
+                    raise HTTPException(status_code=502, detail=f"Failed to fetch Prometheus metrics from {req.prom_url}: {e}")
+                _safe_write_text(prom_path, prom_body)
+            prom_files.append(str(prom_path))
 
         if i < req.dump_count - 1:
             time.sleep(req.interval_sec)
@@ -186,6 +257,7 @@ def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -
         saved_dir=str(run_dir),
         actuator_url=req.actuator_url,
         files=[pathlib.Path(p).name for p in files],
+        prom_files=[pathlib.Path(p).name for p in prom_files],
         dump_count=req.dump_count,
         interval_sec=req.interval_sec,
         analysis_saved=analysis_saved,
@@ -227,9 +299,12 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
     processing_mode = req.processing_mode
     run_mcp = processing_mode in {"mcp", "both"}
     run_llm = processing_mode in {"llm", "both"}
+    trace_options = _parse_trace_options(req.additional_trace_options or "")
 
     raw_files: List[str] = []
     converted_files: List[str] = []
+    prom_files: List[str] = []
+    trace_files: List[str] = []
     segments: List[str] = []
     llm_dumps: List[str] = []
 
@@ -252,6 +327,27 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
 
         if run_llm:
             llm_dumps.append(body)
+
+        if req.prom_url:
+            prom_path = run_dir / f"dump{i+1}.prom.txt"
+            if not prom_path.exists():
+                try:
+                    prom_body = fetch_http_text(req.prom_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
+                except Exception as e:
+                    raise HTTPException(status_code=502, detail=f"Failed to fetch Prometheus metrics from {req.prom_url}: {e}")
+                _safe_write_text(prom_path, prom_body)
+            prom_files.append(prom_path.name)
+
+        trace_files.extend(
+            _collect_trace_outputs_for_dump(
+                run_dir=run_dir,
+                dump_index=i + 1,
+                trace_options=trace_options,
+                trace_timeout_sec=req.trace_timeout_sec,
+                tcpdump_packet_count=req.tcpdump_packet_count,
+                trace_parallel=req.trace_parallel,
+            )
+        )
 
         if run_mcp:
             if conv_path.exists():
@@ -350,6 +446,8 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
         actuator_url=req.actuator_url,
         files=raw_files,
         converted_files=converted_files,
+        prom_files=prom_files,
+        trace_files=trace_files,
         dump_count=req.dump_count,
         interval_sec=req.interval_sec,
         processing_mode=processing_mode,

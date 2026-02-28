@@ -1,3 +1,4 @@
+import subprocess
 from typing import Dict, Optional, Tuple
 
 import requests
@@ -30,7 +31,42 @@ def external_actuator_auth(req) -> Tuple[Optional[Tuple[str, str]], Dict[str, st
     return external_actuator_auth_mode(req.auth_mode, req.user, req.password, req.token, req.authorization_header)
 
 
-def fetch_actuator_threaddump(url: str, auth: Optional[Tuple[str, str]], headers: Dict[str, str], timeout_sec: int = 10) -> str:
+def fetch_http_text(url: str, auth: Optional[Tuple[str, str]], headers: Dict[str, str], timeout_sec: int = 10) -> str:
     r = requests.get(url, auth=auth, headers=headers, timeout=timeout_sec)
     r.raise_for_status()
     return r.text
+
+
+def fetch_actuator_threaddump(url: str, auth: Optional[Tuple[str, str]], headers: Dict[str, str], timeout_sec: int = 10) -> str:
+    return fetch_http_text(url, auth=auth, headers=headers, timeout_sec=timeout_sec)
+
+
+def run_trace_command(option: str, timeout_sec: int = 8, tcpdump_packet_count: int = 50) -> str:
+    opt = (option or "").strip().lower()
+    commands = {
+        "ss": ["ss", "-pant"],
+        "netstat": ["netstat", "-an"],
+        "tcpdump": ["tcpdump", "-nn", "-i", "any", "-c", str(int(tcpdump_packet_count))],
+    }
+    if opt not in commands:
+        raise RuntimeError(f"Unsupported trace option: {option}")
+
+    try:
+        proc = subprocess.run(
+            commands[opt],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(f"Command not found for option '{opt}': {e}")
+    except subprocess.TimeoutExpired as e:
+        partial = (e.stdout or "") + ("\n" + e.stderr if e.stderr else "")
+        raise RuntimeError(f"Command timed out for option '{opt}'. Partial output:\n{partial}")
+
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        raise RuntimeError(f"Command failed for option '{opt}' (exit={proc.returncode}): {err or out}")
+    return out or err

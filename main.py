@@ -34,6 +34,10 @@ _SCHEMA_PATCHES = {
             "description": "Full actuator thread dump endpoint URL.",
             "example": "https://example-host/actuator/threaddump",
         },
+        "prom_url": {
+            "description": "Optional Prometheus metrics endpoint URL captured alongside each dump.",
+            "example": "https://example-host/actuator/prometheus",
+        },
         "auth_mode": {"description": "Authentication mode: none|basic|bearer|header.", "example": "none"},
         "top_n": {"description": "Number of top hotspots to include during optional auto analysis.", "example": 15},
     },
@@ -42,23 +46,46 @@ _SCHEMA_PATCHES = {
             "description": "Full actuator thread dump endpoint URL.",
             "example": "https://example-host/actuator/threaddump",
         },
+        "prom_url": {
+            "description": "Optional Prometheus metrics endpoint URL captured alongside each dump.",
+            "example": "https://example-host/actuator/prometheus",
+        },
+        "additional_trace_options": {
+            "description": "Optional comma-separated diagnostics per dump: ss,netstat,tcpdump.",
+            "example": "ss,netstat",
+        },
+        "trace_timeout_sec": {
+            "description": "Per-trace command timeout in seconds.",
+            "example": 8,
+        },
+        "trace_parallel": {
+            "description": "Run additional trace commands in parallel for each dump index.",
+            "example": True,
+        },
+        "tcpdump_packet_count": {
+            "description": "Packet count limit when tcpdump is selected.",
+            "example": 50,
+        },
         "auth_mode": {"description": "Authentication mode: none|basic|bearer|header.", "example": "none"},
         "processing_mode": {"description": "Post-capture processing mode: mcp, llm, or both.", "example": "both"},
         "top_n": {"description": "Top findings count used by LLM analysis.", "example": 15},
         "run_virtual": {"description": "Whether virtual-thread analysis should run.", "example": True},
         "wrap_if_missing_header": {"description": "Wrap non-HotSpot dump text with a synthetic header.", "example": True},
     },
-    "ExternalActuatorCaptureResponse": {
-        "analysis_error": {
-            "description": "Analysis failure reason when auto-analysis could not complete.",
-            "example": "Model invocation timed out",
-        }
-    },
     "ActuatorCaptureAnalyzeResponse": {
         "normalized_text": {"description": "Human-readable normalized TDA analysis summary."},
         "tda_raw": {"description": "Raw tool output payload from TDA MCP pipeline."},
         "llm_analysis": {"description": "Structured LLM multi-dump analysis output."},
         "llm_analysis_error": {"description": "LLM processing failure reason when available."},
+        "prom_files": {"description": "Prometheus metric snapshots captured per dump index when prom_url is provided."},
+        "trace_files": {"description": "Additional diagnostics per dump (for example ss/netstat/tcpdump outputs or .error.txt files)."},
+    },
+    "ExternalActuatorCaptureResponse": {
+        "analysis_error": {
+            "description": "Analysis failure reason when auto-analysis could not complete.",
+            "example": "Model invocation timed out",
+        },
+        "prom_files": {"description": "Prometheus metric snapshots captured per dump index when prom_url is provided."},
     },
 }
 

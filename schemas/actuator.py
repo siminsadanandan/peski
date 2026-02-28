@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 class TdaMcpActuatorCaptureRequest(BaseModel):
     actuator_url: str
+    prom_url: Optional[str] = Field(default=None, description="Optional Prometheus metrics endpoint to snapshot alongside each dump.")
     dump_count: int = Field(default=3, ge=2, le=10)
     interval_sec: int = Field(default=5, ge=1, le=120)
 
@@ -18,6 +19,26 @@ class TdaMcpActuatorCaptureRequest(BaseModel):
     alertname: Optional[str] = None
     instance: Optional[str] = None
 
+    additional_trace_options: Optional[str] = Field(
+        default=None,
+        description="Optional comma-separated diagnostics to capture per dump: ss,netstat,tcpdump.",
+    )
+    trace_timeout_sec: int = Field(
+        default=8,
+        ge=1,
+        le=120,
+        description="Per-trace command timeout in seconds.",
+    )
+    trace_parallel: bool = Field(
+        default=False,
+        description="Run additional trace commands in parallel for each dump index.",
+    )
+    tcpdump_packet_count: int = Field(
+        default=50,
+        ge=1,
+        le=10000,
+        description="Packet count limit when tcpdump is selected.",
+    )
     processing_mode: Literal["mcp", "llm", "both"] = Field(
         default="mcp",
         description="Post-capture processing mode: mcp, llm, or both.",
@@ -55,6 +76,8 @@ class ActuatorCaptureAnalyzeResponse(BaseModel):
     actuator_url: str
     files: List[str]
     converted_files: List[str]
+    prom_files: List[str]
+    trace_files: List[str]
     dump_count: int
     interval_sec: int
     processing_mode: Literal["mcp", "llm", "both"]
@@ -73,6 +96,7 @@ class ActuatorCaptureAnalyzeResponse(BaseModel):
 
 class ExternalActuatorCaptureRequest(BaseModel):
     actuator_url: str
+    prom_url: Optional[str] = Field(default=None, description="Optional Prometheus metrics endpoint to snapshot alongside each dump.")
     dump_count: int = Field(default=3, ge=2, le=10)
     interval_sec: int = Field(default=5, ge=1, le=120)
 
@@ -95,6 +119,7 @@ class ExternalActuatorCaptureResponse(BaseModel):
     saved_dir: str
     actuator_url: str
     files: List[str]
+    prom_files: List[str]
     dump_count: int
     interval_sec: int
     analysis_saved: bool = False
