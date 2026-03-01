@@ -18,10 +18,27 @@ class TdaMcpActuatorCaptureRequest(BaseModel):
     app_hint: Optional[str] = None
     alertname: Optional[str] = None
     instance: Optional[str] = None
+    target_namespace: Optional[str] = Field(default=None, description="Target Kubernetes namespace (from alert metadata).")
+    target_pod: Optional[str] = Field(default=None, description="Target Kubernetes pod name (from alert metadata).")
+    target_app: Optional[str] = Field(default=None, description="Target app/workload name (from alert metadata).")
+    target_process_name: Optional[str] = Field(default=None, description="Optional process name hint used by external diagnostics tooling.")
 
     additional_trace_options: Optional[str] = Field(
         default=None,
         description="Optional comma-separated diagnostics to capture per dump: ss,netstat,tcpdump.",
+    )
+    trace_executor_mode: Literal["local", "nsenter"] = Field(
+        default="local",
+        description="Trace command execution mode: local (container namespace) or nsenter (target namespace).",
+    )
+    trace_target_pid: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Host PID used for nsenter target when trace_executor_mode=nsenter.",
+    )
+    trace_target_netns_path: Optional[str] = Field(
+        default=None,
+        description="Explicit net namespace path for nsenter (for example /proc/<pid>/ns/net).",
     )
     trace_timeout_sec: int = Field(
         default=8,

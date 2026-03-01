@@ -238,6 +238,12 @@ Purpose: Capture actuator dumps and process with MCP, LLM, or both.
 Request body:
 - Direct `TdaMcpActuatorCaptureRequest` JSON, or
 - Grafana-style webhook containing JSON string in `message`.
+- Metadata fields supported for diagnostics targeting:
+  - `target_namespace`
+  - `target_pod`
+  - `target_app`
+  - `target_process_name`
+  These are auto-populated from Grafana labels when possible.
 - Optional `prom_url` captures Prometheus metrics snapshots per dump as `dumpN.prom.txt`.
 - Optional `additional_trace_options` captures extra diagnostics per dump:
   - `ss`
@@ -248,16 +254,30 @@ Request body:
   - `trace_timeout_sec` (default `8`)
   - `trace_parallel` (default `false`)
   - `tcpdump_packet_count` (default `50`)
+  - `trace_executor_mode` (`local` or `nsenter`, default `local`)
+  - `trace_target_pid` (host PID for nsenter)
+  - `trace_target_netns_path` (explicit netns path for nsenter)
 - Use `processing_mode`:
   - `mcp` (default)
   - `llm`
   - `both`
 
+nsenter notes:
+- `TRACE_NSENTER_ENABLED=true` must be set in environment.
+- `TRACE_HOST_PID_DISCOVERY_ENABLED=true` is required if nsenter mode is used without `trace_target_pid`/`trace_target_netns_path` and PID discovery via metadata is expected.
+
 Example (direct):
 ```bash
 curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
   -H 'Content-Type: application/json' \
-  -d '{"actuator_url":"https://example-host/actuator/threaddump","dump_count":3,"interval_sec":5,"auth_mode":"none","processing_mode":"both","run_virtual":true}'
+  -d '{"actuator_url":"https://example-host/actuator/threaddump","dump_count":3,"interval_sec":5,"auth_mode":"none","processing_mode":"both","run_virtual":true,"additional_trace_options":"ss,netstat","trace_parallel":true}'
+```
+
+Example (nsenter mode with explicit host PID):
+```bash
+curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"actuator_url":"https://example-host/actuator/threaddump","processing_mode":"mcp","additional_trace_options":"tcpdump","trace_executor_mode":"nsenter","trace_target_pid":12345,"tcpdump_packet_count":100,"trace_timeout_sec":10}'
 ```
 
 Success response: `ActuatorCaptureAnalyzeResponse`.

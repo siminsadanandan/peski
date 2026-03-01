@@ -4,7 +4,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -80,6 +80,13 @@ def _collect_trace_outputs_for_dump(
     trace_timeout_sec: int,
     tcpdump_packet_count: int,
     trace_parallel: bool,
+    trace_executor_mode: str,
+    trace_target_pid: Optional[int],
+    trace_target_netns_path: Optional[str],
+    target_process_name: Optional[str],
+    target_namespace: Optional[str],
+    target_pod: Optional[str],
+    target_app: Optional[str],
 ) -> List[str]:
     out_files: List[str] = []
     if not trace_options:
@@ -97,6 +104,13 @@ def _collect_trace_outputs_for_dump(
                 opt,
                 timeout_sec=trace_timeout_sec,
                 tcpdump_packet_count=tcpdump_packet_count,
+                executor_mode=trace_executor_mode,
+                target_pid=trace_target_pid,
+                target_netns_path=trace_target_netns_path,
+                target_process_name=target_process_name,
+                target_namespace=target_namespace,
+                target_pod=target_pod,
+                target_app=target_app,
             )
             _safe_write_text(trace_path, trace_out)
             return trace_path.name
@@ -146,6 +160,14 @@ def _labels_from_grafana(grafana: GrafanaAlertWebhookRequest) -> dict:
     return labels
 
 
+def _first_label(labels: dict, keys: List[str]) -> str:
+    for k in keys:
+        v = labels.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
 def _normalize_tda_capture_request(payload: dict) -> TdaMcpActuatorCaptureRequest:
     direct = payload
     parse_error = None
@@ -179,6 +201,18 @@ def _normalize_tda_capture_request(payload: dict) -> TdaMcpActuatorCaptureReques
         extracted["alertname"] = labels["alertname"]
     if labels.get("instance") and not extracted.get("instance"):
         extracted["instance"] = labels["instance"]
+    if not extracted.get("target_namespace"):
+        ns = _first_label(labels, ["namespace", "kubernetes_namespace", "k8s_namespace"])
+        if ns:
+            extracted["target_namespace"] = ns
+    if not extracted.get("target_pod"):
+        pod = _first_label(labels, ["pod", "pod_name", "kubernetes_pod_name"])
+        if pod:
+            extracted["target_pod"] = pod
+    if not extracted.get("target_app"):
+        app = _first_label(labels, ["app", "app_kubernetes_io_name", "k8s_app", "workload"])
+        if app:
+            extracted["target_app"] = app
 
     try:
         return TdaMcpActuatorCaptureRequest(**extracted)
@@ -346,6 +380,13 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
                 trace_timeout_sec=req.trace_timeout_sec,
                 tcpdump_packet_count=req.tcpdump_packet_count,
                 trace_parallel=req.trace_parallel,
+                trace_executor_mode=req.trace_executor_mode,
+                trace_target_pid=req.trace_target_pid,
+                trace_target_netns_path=req.trace_target_netns_path,
+                target_process_name=req.target_process_name,
+                target_namespace=req.target_namespace,
+                target_pod=req.target_pod,
+                target_app=req.target_app,
             )
         )
 

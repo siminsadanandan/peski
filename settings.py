@@ -17,6 +17,13 @@ def _env_str(name: str, default: str) -> str:
     return os.getenv(name, default)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _env_provider_with_fallback(primary: str, fallback: str, default: str) -> str:
     value = _env_with_fallback(primary, fallback, default).strip().lower()
     if value not in {"ollama", "openai"}:
@@ -63,3 +70,5 @@ TDA_TMP_DIR = _env_str("TDA_TMP_DIR", "/tmp/tda_inputs")
 
 CAPTURE_OUT_DIR = _env_str("CAPTURE_OUT_DIR", "/var/log/threaddumps")
 CAPTURE_HTTP_TIMEOUT_SEC = _env_int("CAPTURE_HTTP_TIMEOUT_SEC", 10)
+TRACE_NSENTER_ENABLED = _env_bool("TRACE_NSENTER_ENABLED", False)
+TRACE_HOST_PID_DISCOVERY_ENABLED = _env_bool("TRACE_HOST_PID_DISCOVERY_ENABLED", False)
