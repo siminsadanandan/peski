@@ -284,6 +284,24 @@ Success response: `ActuatorCaptureAnalyzeResponse`.
 
 Errors: `422` invalid payload/normalization error, `500` boundary guard failure, `502` actuator or TDA MCP dependency failure.
 
+### GET `/v1/alerts/actuator/runs/{run_id}/report`
+Purpose: Render a single captured run as an HTML report directly from local filesystem artifacts.
+
+Path parameter:
+- `run_id`: run folder name under `CAPTURE_OUT_DIR` (for example `my-alert_app_instance_20260226T101840Z`).
+
+Example:
+```bash
+curl -i http://localhost:8080/v1/alerts/actuator/runs/my-alert_app_instance_20260226T101840Z/report
+```
+
+Browser usage:
+- Open `http://localhost:8080/v1/alerts/actuator/runs/<run_id>/report`
+
+Success response: HTML page with file index plus sections for dumps, prom snapshots, traces, MCP outputs, LLM outputs, and error files.
+
+Errors: `404` run not found, `422` invalid run id format/path.
+
 ## health
 
 ### GET `/v1/health`

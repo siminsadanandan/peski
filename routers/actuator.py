@@ -1,4 +1,5 @@
 import json
+import html
 import pathlib
 import re
 import time
@@ -7,6 +8,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse
 
 from schemas import (
     ActuatorCaptureAnalyzeResponse,
@@ -53,6 +55,72 @@ def _safe_write_text(path: pathlib.Path, content: str) -> None:
     except FileNotFoundError:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8", errors="replace")
+
+
+def _file_preview_text(path: pathlib.Path, max_chars: int = 50000) -> str:
+    content = path.read_text(encoding="utf-8", errors="replace")
+    if len(content) > max_chars:
+        return content[:max_chars] + f"\n\n... [truncated, showing first {max_chars} chars]"
+    return content
+
+
+def _render_run_report_html(run_dir: pathlib.Path) -> str:
+    files = sorted([p for p in run_dir.iterdir() if p.is_file()], key=lambda p: p.name)
+    dump_files = [p for p in files if re.fullmatch(r"dump\d+\.json", p.name)]
+    conv_files = [p for p in files if re.fullmatch(r"dump\d+\.log", p.name)]
+    prom_files = [p for p in files if re.fullmatch(r"dump\d+\.prom\.txt", p.name)]
+    trace_files = [p for p in files if re.fullmatch(r"dump\d+\.(ss|netstat|tcpdump)\.txt", p.name)]
+    error_files = [p for p in files if p.name.endswith(".error.txt")]
+    mcp_files = [p for p in files if p.name in {"tda_input_combined.log", "tda_analysis_raw.json", "tda_analysis.txt"}]
+    llm_files = [p for p in files if p.name in {"analysis_llm.json", "analysis_llm_error.txt"}]
+
+    def _section(title: str, items: List[pathlib.Path]) -> str:
+        if not items:
+            return f"<section><h2>{html.escape(title)}</h2><p>No files.</p></section>"
+        body = []
+        for p in items:
+            preview = html.escape(_file_preview_text(p))
+            body.append(
+                "<article>"
+                f"<h3>{html.escape(p.name)}</h3>"
+                f"<p class='meta'>size={p.stat().st_size} bytes</p>"
+                f"<pre>{preview}</pre>"
+                "</article>"
+            )
+        return f"<section><h2>{html.escape(title)}</h2>{''.join(body)}</section>"
+
+    generated_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    all_files = "".join(f"<li>{html.escape(p.name)}</li>" for p in files) or "<li>No files found</li>"
+    return (
+        "<!doctype html>"
+        "<html><head><meta charset='utf-8'/>"
+        f"<title>Run Report - {html.escape(run_dir.name)}</title>"
+        "<style>"
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f6f8fb;color:#0f172a;"
+        "margin:0;padding:24px;line-height:1.4}"
+        ".wrap{max-width:1200px;margin:0 auto}"
+        "h1{margin:0 0 8px;font-size:28px}.muted{color:#475569;margin:0 0 20px}"
+        "section{background:#fff;border:1px solid #dbe3ee;border-radius:10px;padding:14px 16px;margin:0 0 14px}"
+        "h2{margin:4px 0 12px;font-size:19px}h3{margin:10px 0 6px;font-size:15px}"
+        "pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;border:1px solid #e2e8f0;"
+        "padding:10px;border-radius:8px;max-height:340px;overflow:auto}"
+        ".meta{color:#334155;font-size:12px;margin:0 0 6px}"
+        "ul{margin:8px 0 0 18px}"
+        "</style></head><body><div class='wrap'>"
+        f"<h1>Actuator Run Report: {html.escape(run_dir.name)}</h1>"
+        f"<p class='muted'>Directory: {html.escape(str(run_dir))} | Generated: {generated_utc}</p>"
+        "<section><h2>File Index</h2><ul>"
+        f"{all_files}"
+        "</ul></section>"
+        f"{_section('Thread Dump Raw Files', dump_files)}"
+        f"{_section('Thread Dump Converted Files', conv_files)}"
+        f"{_section('Prometheus Snapshots', prom_files)}"
+        f"{_section('Additional Trace Outputs', trace_files)}"
+        f"{_section('MCP Outputs', mcp_files)}"
+        f"{_section('LLM Outputs', llm_files)}"
+        f"{_section('Error Files', error_files)}"
+        "</div></body></html>"
+    )
 
 
 def _parse_trace_options(raw: str) -> List[str]:
@@ -501,3 +569,29 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
         llm_analysis_error=llm_analysis_error,
         notes=" ".join(notes) if notes else None,
     )
+
+
+@router.get(
+    "/v1/alerts/actuator/runs/{run_id}/report",
+    response_class=HTMLResponse,
+    summary="Render run report as HTML",
+    description="Loads one capture run directory from local storage and renders an HTML report with all run artifacts.",
+    response_description="HTML report for a single run directory.",
+    responses={
+        200: {"description": "Run report generated successfully."},
+        404: {"description": "Run directory not found."},
+        422: {"description": "Invalid run id."},
+    },
+)
+def get_actuator_run_report(run_id: str) -> HTMLResponse:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", run_id):
+        raise HTTPException(status_code=422, detail="Invalid run_id format.")
+
+    base_dir = pathlib.Path(CAPTURE_OUT_DIR).resolve()
+    run_dir = (base_dir / run_id).resolve()
+    if run_dir.parent != base_dir:
+        raise HTTPException(status_code=422, detail="Invalid run_id path.")
+    if not run_dir.exists() or not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+
+    return HTMLResponse(content=_render_run_report_html(run_dir))

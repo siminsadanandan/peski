@@ -67,6 +67,7 @@ Full route documentation is in [docs/API.md](docs/API.md).
 - actuator
   - `POST /v1/alerts/actuator/threaddump/capture`
   - `POST /v1/alerts/actuator/threaddump/capture-analyze`
+  - `GET /v1/alerts/actuator/runs/{run_id}/report`
 
 ## Troubleshooting import errors
 
