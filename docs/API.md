@@ -276,6 +276,13 @@ curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze
   -d '{"actuator_url":"https://example-host/actuator/threaddump","dump_count":3,"interval_sec":5,"auth_mode":"none","processing_mode":"both","run_virtual":true,"additional_trace_options":"ss,netstat","trace_parallel":true}'
 ```
 
+Example (with Prometheus snapshots per dump):
+```bash
+curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"actuator_url":"https://example-host/actuator/threaddump","prom_url":"https://example-host/actuator/prometheus","dump_count":3,"interval_sec":5,"auth_mode":"none","processing_mode":"mcp"}'
+```
+
 Example (queue LLM in background for webhook-safe response latency):
 ```bash
 curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
