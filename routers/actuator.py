@@ -1,11 +1,14 @@
 import json
+import html
 import pathlib
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse
 
 from schemas import (
     ActuatorCaptureAnalyzeResponse,
@@ -27,6 +30,8 @@ from services import (
     external_actuator_auth,
     external_actuator_auth_mode,
     fetch_actuator_threaddump,
+    fetch_http_text,
+    run_trace_command,
     safe_name,
     tda_mcp_run_pipeline,
     td_multi_chain,
@@ -40,6 +45,7 @@ ROUTER_TAGS = ["actuator"]
 router = APIRouter(prefix=ROUTER_PREFIX, tags=ROUTER_TAGS)
 
 _RUN_DIR_TS_RE = re.compile(r"(\d{8}T\d{6}Z)$")
+_TRACE_OPTIONS = {"ss", "netstat", "tcpdump"}
 
 
 def _safe_write_text(path: pathlib.Path, content: str) -> None:
@@ -49,6 +55,176 @@ def _safe_write_text(path: pathlib.Path, content: str) -> None:
     except FileNotFoundError:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8", errors="replace")
+
+
+def _file_preview_text(path: pathlib.Path, max_chars: int = 50000) -> str:
+    content = path.read_text(encoding="utf-8", errors="replace")
+    if len(content) > max_chars:
+        return content[:max_chars] + f"\n\n... [truncated, showing first {max_chars} chars]"
+    return content
+
+
+def _render_run_report_html(run_dir: pathlib.Path) -> str:
+    files = sorted([p for p in run_dir.iterdir() if p.is_file()], key=lambda p: p.name)
+    dump_files = [p for p in files if re.fullmatch(r"dump\d+\.json", p.name)]
+    conv_files = [p for p in files if re.fullmatch(r"dump\d+\.log", p.name)]
+    prom_files = [p for p in files if re.fullmatch(r"dump\d+\.prom\.txt", p.name)]
+    trace_files = [p for p in files if re.fullmatch(r"dump\d+\.(ss|netstat|tcpdump)\.txt", p.name)]
+    error_files = [p for p in files if p.name.endswith(".error.txt")]
+    mcp_files = [p for p in files if p.name in {"tda_input_combined.log", "tda_analysis_raw.json", "tda_analysis.txt"}]
+    llm_files = [p for p in files if p.name in {"analysis_llm.json", "analysis_llm_error.txt"}]
+
+    def _section(title: str, items: List[pathlib.Path]) -> str:
+        if not items:
+            return f"<section><h2>{html.escape(title)}</h2><p>No files.</p></section>"
+        body = []
+        for p in items:
+            preview = html.escape(_file_preview_text(p))
+            body.append(
+                "<article>"
+                f"<h3>{html.escape(p.name)}</h3>"
+                f"<p class='meta'>size={p.stat().st_size} bytes</p>"
+                f"<pre>{preview}</pre>"
+                "</article>"
+            )
+        return f"<section><h2>{html.escape(title)}</h2>{''.join(body)}</section>"
+
+    generated_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    all_files = "".join(f"<li>{html.escape(p.name)}</li>" for p in files) or "<li>No files found</li>"
+    return (
+        "<!doctype html>"
+        "<html><head><meta charset='utf-8'/>"
+        f"<title>Run Report - {html.escape(run_dir.name)}</title>"
+        "<style>"
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f6f8fb;color:#0f172a;"
+        "margin:0;padding:24px;line-height:1.4}"
+        ".wrap{max-width:1200px;margin:0 auto}"
+        "h1{margin:0 0 8px;font-size:28px}.muted{color:#475569;margin:0 0 20px}"
+        "section{background:#fff;border:1px solid #dbe3ee;border-radius:10px;padding:14px 16px;margin:0 0 14px}"
+        "h2{margin:4px 0 12px;font-size:19px}h3{margin:10px 0 6px;font-size:15px}"
+        "pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;border:1px solid #e2e8f0;"
+        "padding:10px;border-radius:8px;max-height:340px;overflow:auto}"
+        ".meta{color:#334155;font-size:12px;margin:0 0 6px}"
+        "ul{margin:8px 0 0 18px}"
+        "</style></head><body><div class='wrap'>"
+        f"<h1>Actuator Run Report: {html.escape(run_dir.name)}</h1>"
+        f"<p class='muted'>Directory: {html.escape(str(run_dir))} | Generated: {generated_utc}</p>"
+        "<section><h2>File Index</h2><ul>"
+        f"{all_files}"
+        "</ul></section>"
+        f"{_section('Thread Dump Raw Files', dump_files)}"
+        f"{_section('Thread Dump Converted Files', conv_files)}"
+        f"{_section('Prometheus Snapshots', prom_files)}"
+        f"{_section('Additional Trace Outputs', trace_files)}"
+        f"{_section('MCP Outputs', mcp_files)}"
+        f"{_section('LLM Outputs', llm_files)}"
+        f"{_section('Error Files', error_files)}"
+        "</div></body></html>"
+    )
+
+
+def _run_llm_analysis_and_persist(
+    run_dir: pathlib.Path,
+    llm_dumps: List[str],
+    app_hint: str,
+    top_n: int,
+) -> tuple[Optional[dict], bool, Optional[str]]:
+    try:
+        dumps_block = "\n\n===== NEXT DUMP =====\n\n".join([f"### dump[{i}]\n{d}" for i, d in enumerate(llm_dumps)])
+        llm_out = td_multi_chain.invoke({
+            "app_hint": app_hint,
+            "times_utc": [],
+            "top_n": int(top_n),
+            "dump_count": len(llm_dumps),
+            "dumps_block": dumps_block,
+            "format_instructions": td_multi_parser.get_format_instructions(),
+        })
+        if hasattr(llm_out, "model_dump"):
+            llm_analysis = llm_out.model_dump()
+        elif hasattr(llm_out, "dict"):
+            llm_analysis = llm_out.dict()
+        else:
+            llm_analysis = llm_out
+        _safe_write_text(run_dir / "analysis_llm.json", json.dumps(llm_analysis, indent=2))
+        return llm_analysis, True, None
+    except Exception as e:
+        llm_analysis_error = str(e)
+        _safe_write_text(run_dir / "analysis_llm_error.txt", llm_analysis_error)
+        return None, False, llm_analysis_error
+
+
+def _parse_trace_options(raw: str) -> List[str]:
+    if not raw:
+        return []
+    out: List[str] = []
+    for part in raw.split(","):
+        opt = part.strip().lower()
+        if not opt:
+            continue
+        if opt not in _TRACE_OPTIONS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unsupported additional_trace_options value '{opt}'. Supported: ss,netstat,tcpdump",
+            )
+        if opt not in out:
+            out.append(opt)
+    return out
+
+
+def _collect_trace_outputs_for_dump(
+    run_dir: pathlib.Path,
+    dump_index: int,
+    trace_options: List[str],
+    trace_timeout_sec: int,
+    tcpdump_packet_count: int,
+    trace_parallel: bool,
+    trace_executor_mode: str,
+    trace_target_pid: Optional[int],
+    trace_target_netns_path: Optional[str],
+    target_process_name: Optional[str],
+    target_namespace: Optional[str],
+    target_pod: Optional[str],
+    target_app: Optional[str],
+) -> List[str]:
+    out_files: List[str] = []
+    if not trace_options:
+        return out_files
+
+    def _run_one(opt: str) -> str:
+        trace_path = run_dir / f"dump{dump_index}.{opt}.txt"
+        err_path = run_dir / f"dump{dump_index}.{opt}.error.txt"
+        if trace_path.exists():
+            return trace_path.name
+        if err_path.exists():
+            return err_path.name
+        try:
+            trace_out = run_trace_command(
+                opt,
+                timeout_sec=trace_timeout_sec,
+                tcpdump_packet_count=tcpdump_packet_count,
+                executor_mode=trace_executor_mode,
+                target_pid=trace_target_pid,
+                target_netns_path=trace_target_netns_path,
+                target_process_name=target_process_name,
+                target_namespace=target_namespace,
+                target_pod=target_pod,
+                target_app=target_app,
+            )
+            _safe_write_text(trace_path, trace_out)
+            return trace_path.name
+        except Exception as e:
+            _safe_write_text(err_path, str(e))
+            return err_path.name
+
+    if trace_parallel and len(trace_options) > 1:
+        with ThreadPoolExecutor(max_workers=min(len(trace_options), 4)) as pool:
+            futures = [pool.submit(_run_one, opt) for opt in trace_options]
+            for fut in as_completed(futures):
+                out_files.append(fut.result())
+    else:
+        for opt in trace_options:
+            out_files.append(_run_one(opt))
+    return out_files
 
 
 def _pick_or_create_run_dir(base_dir: pathlib.Path, prefix: str, dump_count: int) -> pathlib.Path:
@@ -80,6 +256,14 @@ def _labels_from_grafana(grafana: GrafanaAlertWebhookRequest) -> dict:
         if isinstance(first, dict) and isinstance(first.get("labels"), dict):
             labels.update(first["labels"])
     return labels
+
+
+def _first_label(labels: dict, keys: List[str]) -> str:
+    for k in keys:
+        v = labels.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
 
 
 def _normalize_tda_capture_request(payload: dict) -> TdaMcpActuatorCaptureRequest:
@@ -115,6 +299,18 @@ def _normalize_tda_capture_request(payload: dict) -> TdaMcpActuatorCaptureReques
         extracted["alertname"] = labels["alertname"]
     if labels.get("instance") and not extracted.get("instance"):
         extracted["instance"] = labels["instance"]
+    if not extracted.get("target_namespace"):
+        ns = _first_label(labels, ["namespace", "kubernetes_namespace", "k8s_namespace"])
+        if ns:
+            extracted["target_namespace"] = ns
+    if not extracted.get("target_pod"):
+        pod = _first_label(labels, ["pod", "pod_name", "kubernetes_pod_name"])
+        if pod:
+            extracted["target_pod"] = pod
+    if not extracted.get("target_app"):
+        app = _first_label(labels, ["app", "app_kubernetes_io_name", "k8s_app", "workload"])
+        if app:
+            extracted["target_app"] = app
 
     try:
         return TdaMcpActuatorCaptureRequest(**extracted)
@@ -144,19 +340,26 @@ def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -
     auth, headers = external_actuator_auth(req)
 
     files: List[str] = []
+    prom_files: List[str] = []
     for i in range(req.dump_count):
         fn = run_dir / f"dump{i+1}.json"
-        if fn.exists():
-            files.append(str(fn))
-            continue
-
-        try:
-            body = fetch_actuator_threaddump(req.actuator_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to fetch actuator threaddump from {req.actuator_url}: {e}")
-
-        _safe_write_text(fn, body)
+        if not fn.exists():
+            try:
+                body = fetch_actuator_threaddump(req.actuator_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"Failed to fetch actuator threaddump from {req.actuator_url}: {e}")
+            _safe_write_text(fn, body)
         files.append(str(fn))
+
+        if req.prom_url:
+            prom_path = run_dir / f"dump{i+1}.prom.txt"
+            if not prom_path.exists():
+                try:
+                    prom_body = fetch_http_text(req.prom_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
+                except Exception as e:
+                    raise HTTPException(status_code=502, detail=f"Failed to fetch Prometheus metrics from {req.prom_url}: {e}")
+                _safe_write_text(prom_path, prom_body)
+            prom_files.append(str(prom_path))
 
         if i < req.dump_count - 1:
             time.sleep(req.interval_sec)
@@ -186,6 +389,7 @@ def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -
         saved_dir=str(run_dir),
         actuator_url=req.actuator_url,
         files=[pathlib.Path(p).name for p in files],
+        prom_files=[pathlib.Path(p).name for p in prom_files],
         dump_count=req.dump_count,
         interval_sec=req.interval_sec,
         analysis_saved=analysis_saved,
@@ -204,12 +408,17 @@ def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -
     response_description="Capture metadata with optional MCP and/or LLM analysis outputs.",
     responses={
         200: {"description": "Thread dumps captured and processed successfully."},
+        202: {"description": "Thread dumps captured; LLM analysis accepted for background processing."},
         422: {"description": "Request payload is invalid or cannot be normalized."},
         500: {"description": "Internal boundary marker guard failed while composing input."},
         502: {"description": "Actuator fetch or downstream dependency failed."},
     },
 )
-async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCaptureAnalyzeResponse:
+async def capture_actuator_threaddumps_tda_mcp(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    response: Response,
+) -> ActuatorCaptureAnalyzeResponse:
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="Request body must be a JSON object.")
@@ -227,9 +436,14 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
     processing_mode = req.processing_mode
     run_mcp = processing_mode in {"mcp", "both"}
     run_llm = processing_mode in {"llm", "both"}
+    llm_execution_mode = req.llm_execution_mode
+    llm_run_background = run_llm and llm_execution_mode == "background"
+    trace_options = _parse_trace_options(req.additional_trace_options or "")
 
     raw_files: List[str] = []
     converted_files: List[str] = []
+    prom_files: List[str] = []
+    trace_files: List[str] = []
     segments: List[str] = []
     llm_dumps: List[str] = []
 
@@ -252,6 +466,34 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
 
         if run_llm:
             llm_dumps.append(body)
+
+        if req.prom_url:
+            prom_path = run_dir / f"dump{i+1}.prom.txt"
+            if not prom_path.exists():
+                try:
+                    prom_body = fetch_http_text(req.prom_url, auth=auth, headers=headers, timeout_sec=CAPTURE_HTTP_TIMEOUT_SEC)
+                except Exception as e:
+                    raise HTTPException(status_code=502, detail=f"Failed to fetch Prometheus metrics from {req.prom_url}: {e}")
+                _safe_write_text(prom_path, prom_body)
+            prom_files.append(prom_path.name)
+
+        trace_files.extend(
+            _collect_trace_outputs_for_dump(
+                run_dir=run_dir,
+                dump_index=i + 1,
+                trace_options=trace_options,
+                trace_timeout_sec=req.trace_timeout_sec,
+                tcpdump_packet_count=req.tcpdump_packet_count,
+                trace_parallel=req.trace_parallel,
+                trace_executor_mode=req.trace_executor_mode,
+                trace_target_pid=req.trace_target_pid,
+                trace_target_netns_path=req.trace_target_netns_path,
+                target_process_name=req.target_process_name,
+                target_namespace=req.target_namespace,
+                target_pod=req.target_pod,
+                target_app=req.target_app,
+            )
+        )
 
         if run_mcp:
             if conv_path.exists():
@@ -278,6 +520,7 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
     tda_raw = None
     llm_analysis = None
     llm_analysis_saved = False
+    llm_analysis_queued = False
     llm_analysis_error = None
     notes: List[str] = []
 
@@ -314,42 +557,37 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
             pass
 
     if run_llm:
-        try:
-            dumps_block = "\n\n===== NEXT DUMP =====\n\n".join([f"### dump[{i}]\n{d}" for i, d in enumerate(llm_dumps)])
-            llm_out = td_multi_chain.invoke({
-                "app_hint": req.app_hint or "",
-                "times_utc": [],
-                "top_n": int(req.top_n),
-                "dump_count": len(llm_dumps),
-                "dumps_block": dumps_block,
-                "format_instructions": td_multi_parser.get_format_instructions(),
-            })
-            if hasattr(llm_out, "model_dump"):
-                llm_analysis = llm_out.model_dump()
-            elif hasattr(llm_out, "dict"):
-                llm_analysis = llm_out.dict()
+        if llm_run_background:
+            background_tasks.add_task(
+                _run_llm_analysis_and_persist,
+                run_dir=run_dir,
+                llm_dumps=llm_dumps,
+                app_hint=req.app_hint or "",
+                top_n=int(req.top_n),
+            )
+            llm_analysis_queued = True
+            notes.append("LLM analysis queued in background.")
+            response.status_code = 202
+        else:
+            llm_analysis, llm_analysis_saved, llm_analysis_error = _run_llm_analysis_and_persist(
+                run_dir=run_dir,
+                llm_dumps=llm_dumps,
+                app_hint=req.app_hint or "",
+                top_n=int(req.top_n),
+            )
+            if llm_analysis_saved:
+                notes.append("LLM multi-dump analysis completed.")
             else:
-                llm_analysis = llm_out
-            llm_analysis_saved = True
-            notes.append("LLM multi-dump analysis completed.")
-            try:
-                _safe_write_text(run_dir / "analysis_llm.json", json.dumps(llm_analysis, indent=2))
-            except Exception:
-                pass
-        except Exception as e:
-            llm_analysis_error = str(e)
-            notes.append("LLM analysis failed.")
-            try:
-                _safe_write_text(run_dir / "analysis_llm_error.txt", llm_analysis_error)
-            except Exception:
-                pass
+                notes.append("LLM analysis failed.")
 
     return ActuatorCaptureAnalyzeResponse(
-        status="captured+processed",
+        status="captured+processing" if llm_analysis_queued else "captured+processed",
         saved_dir=str(run_dir),
         actuator_url=req.actuator_url,
         files=raw_files,
         converted_files=converted_files,
+        prom_files=prom_files,
+        trace_files=trace_files,
         dump_count=req.dump_count,
         interval_sec=req.interval_sec,
         processing_mode=processing_mode,
@@ -359,6 +597,33 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
         tda_raw=tda_raw,
         llm_analysis=llm_analysis,
         llm_analysis_saved=llm_analysis_saved,
+        llm_analysis_queued=llm_analysis_queued,
         llm_analysis_error=llm_analysis_error,
         notes=" ".join(notes) if notes else None,
     )
+
+
+@router.get(
+    "/v1/alerts/actuator/runs/{run_id}/report",
+    response_class=HTMLResponse,
+    summary="Render run report as HTML",
+    description="Loads one capture run directory from local storage and renders an HTML report with all run artifacts.",
+    response_description="HTML report for a single run directory.",
+    responses={
+        200: {"description": "Run report generated successfully."},
+        404: {"description": "Run directory not found."},
+        422: {"description": "Invalid run id."},
+    },
+)
+def get_actuator_run_report(run_id: str) -> HTMLResponse:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", run_id):
+        raise HTTPException(status_code=422, detail="Invalid run_id format.")
+
+    base_dir = pathlib.Path(CAPTURE_OUT_DIR).resolve()
+    run_dir = (base_dir / run_id).resolve()
+    if run_dir.parent != base_dir:
+        raise HTTPException(status_code=422, detail="Invalid run_id path.")
+    if not run_dir.exists() or not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+
+    return HTMLResponse(content=_render_run_report_html(run_dir))

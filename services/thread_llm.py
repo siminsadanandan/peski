@@ -41,10 +41,14 @@ Task:
   Kafka, JDBC pools, etc.
 - Provide concrete next actions: what to capture next (another dump, JFR, async-profiler),
   which metrics to check, and quick mitigations.
+- Also provide deeper analysis where evidence exists:
+  issue severity + confidence, critical threads, and immediate/short-term/long-term actions.
 
 Rules:
 - Do NOT invent stack traces or thread names; only reference what is present.
 - If the dump is incomplete/trimmed, say so and mark findings as tentative.
+- Keep legacy required fields populated exactly as requested by the schema.
+- For optional enhanced fields, return [] or null when evidence is insufficient.
 Return STRICT JSON matching the schema.
 """
 TD_HUMAN = """
@@ -73,9 +77,13 @@ Task:
 - Identify whether stacks are changing (progress) vs identical (stuck).
 - Summarize state changes (RUNNABLE->BLOCKED etc.) for important threads/groups.
 - Provide concrete next actions.
+- Also provide deeper analysis where evidence exists:
+  issue severity + confidence, critical threads, and immediate/short-term/long-term actions.
 
 Rules:
 - Do NOT invent thread names or stacks; only reference evidence present in dumps.
+- Keep legacy required fields populated exactly as requested by the schema.
+- For optional enhanced fields, return [] or null when evidence is insufficient.
 Return STRICT JSON matching the schema.
 """
 TD_MULTI_HUMAN = """

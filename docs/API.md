@@ -7,6 +7,10 @@
   - `tda-mcp` multi-file endpoint: ~5MB total across all files.
   - `db2z` file endpoint: ~5MB.
 - Actuator auth modes: `none`, `basic`, `bearer`, `header`.
+- Additional trace prerequisites:
+  - `ss`: requires `iproute2` package.
+  - `netstat`: requires `net-tools` package.
+  - `tcpdump`: requires `tcpdump` package and typically `NET_RAW`/`NET_ADMIN` capabilities.
 - TDA endpoints require TDA MCP prerequisites configured in runtime environment.
 
 ## gc
@@ -215,6 +219,7 @@ Errors: `400` fewer than 2 files, `413` total upload too large, `500` boundary i
 Purpose: Fetch thread dumps from Spring actuator and optionally run analysis.
 
 Request body: `ExternalActuatorCaptureRequest`.
+- Optional `prom_url` captures Prometheus metrics snapshots per dump as `dumpN.prom.txt`.
 
 Example:
 ```bash
@@ -233,21 +238,80 @@ Purpose: Capture actuator dumps and process with MCP, LLM, or both.
 Request body:
 - Direct `TdaMcpActuatorCaptureRequest` JSON, or
 - Grafana-style webhook containing JSON string in `message`.
+- Metadata fields supported for diagnostics targeting:
+  - `target_namespace`
+  - `target_pod`
+  - `target_app`
+  - `target_process_name`
+  These are auto-populated from Grafana labels when possible.
+- Optional `prom_url` captures Prometheus metrics snapshots per dump as `dumpN.prom.txt`.
+- Optional `additional_trace_options` captures extra diagnostics per dump:
+  - `ss`
+  - `netstat`
+  - `tcpdump`
+  Example: `ss,netstat`
+- Optional trace controls:
+  - `trace_timeout_sec` (default `8`)
+  - `trace_parallel` (default `false`)
+  - `tcpdump_packet_count` (default `50`)
+  - `trace_executor_mode` (`local` or `nsenter`, default `local`)
+  - `trace_target_pid` (host PID for nsenter)
+  - `trace_target_netns_path` (explicit netns path for nsenter)
 - Use `processing_mode`:
   - `mcp` (default)
   - `llm`
   - `both`
+- Optional `llm_execution_mode` controls LLM latency behavior when mode includes `llm`:
+  - `inline` (default): wait for LLM result in same response.
+  - `background`: return `202 Accepted` after capture/MCP; LLM result is written later to the same run directory.
+
+nsenter notes:
+- `TRACE_NSENTER_ENABLED=true` must be set in environment.
+- `TRACE_HOST_PID_DISCOVERY_ENABLED=true` is required if nsenter mode is used without `trace_target_pid`/`trace_target_netns_path` and PID discovery via metadata is expected.
 
 Example (direct):
 ```bash
 curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
   -H 'Content-Type: application/json' \
-  -d '{"actuator_url":"https://example-host/actuator/threaddump","dump_count":3,"interval_sec":5,"auth_mode":"none","processing_mode":"both","run_virtual":true}'
+  -d '{"actuator_url":"https://example-host/actuator/threaddump","dump_count":3,"interval_sec":5,"auth_mode":"none","processing_mode":"both","run_virtual":true,"additional_trace_options":"ss,netstat","trace_parallel":true}'
+```
+
+Example (queue LLM in background for webhook-safe response latency):
+```bash
+curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"actuator_url":"https://example-host/actuator/threaddump","processing_mode":"both","llm_execution_mode":"background","dump_count":3,"interval_sec":5}'
+```
+
+Example (nsenter mode with explicit host PID):
+```bash
+curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"actuator_url":"https://example-host/actuator/threaddump","processing_mode":"mcp","additional_trace_options":"tcpdump","trace_executor_mode":"nsenter","trace_target_pid":12345,"tcpdump_packet_count":100,"trace_timeout_sec":10}'
 ```
 
 Success response: `ActuatorCaptureAnalyzeResponse`.
 
 Errors: `422` invalid payload/normalization error, `500` boundary guard failure, `502` actuator or TDA MCP dependency failure.
+Status `202` means LLM was accepted for background processing.
+
+### GET `/v1/alerts/actuator/runs/{run_id}/report`
+Purpose: Render a single captured run as an HTML report directly from local filesystem artifacts.
+
+Path parameter:
+- `run_id`: run folder name under `CAPTURE_OUT_DIR` (for example `my-alert_app_instance_20260226T101840Z`).
+
+Example:
+```bash
+curl -i http://localhost:8080/v1/alerts/actuator/runs/my-alert_app_instance_20260226T101840Z/report
+```
+
+Browser usage:
+- Open `http://localhost:8080/v1/alerts/actuator/runs/<run_id>/report`
+
+Success response: HTML page with file index plus sections for dumps, prom snapshots, traces, MCP outputs, LLM outputs, and error files.
+
+Errors: `404` run not found, `422` invalid run id format/path.
 
 ## health
 

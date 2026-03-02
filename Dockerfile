@@ -7,6 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       openjdk-21-jre-headless \
       ca-certificates \
+      iproute2 \
+      net-tools \
+      tcpdump \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv/app

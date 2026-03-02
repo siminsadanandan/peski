@@ -3,7 +3,9 @@ from .actuator import (
     CAPTURE_OUT_DIR,
     external_actuator_auth,
     external_actuator_auth_mode,
+    fetch_http_text,
     fetch_actuator_threaddump,
+    run_trace_command,
 )
 from .common import enforce_5mb, safe_name
 from .db2z import quick_db2z_rules, split_sql_statements
@@ -39,7 +41,9 @@ __all__ = [
     "enforce_5mb",
     "external_actuator_auth",
     "external_actuator_auth_mode",
+    "fetch_http_text",
     "fetch_actuator_threaddump",
+    "run_trace_command",
     "gc_chain",
     "gc_parser",
     "quick_db2z_rules",

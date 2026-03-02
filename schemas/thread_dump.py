@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,31 @@ class ThreadHotspot(BaseModel):
     suggested_checks: List[str]
 
 
+class ThreadIssue(BaseModel):
+    title: str
+    severity: Literal["Critical", "High", "Medium", "Low"]
+    confidence: Literal["High", "Medium", "Low"]
+    affected_threads: Optional[int] = None
+    potential_impact: str
+    evidence: List[str] = Field(default_factory=list)
+    likely_cause: Optional[str] = None
+
+
+class ThreadRecommendationPlan(BaseModel):
+    immediate_actions: List[str] = Field(default_factory=list)
+    short_term_improvements: List[str] = Field(default_factory=list)
+    long_term_changes: List[str] = Field(default_factory=list)
+
+
+class CriticalThreadDetail(BaseModel):
+    thread_name: str
+    state: Optional[str] = None
+    why_significant: str
+    stack_snippet: Optional[str] = None
+    related_threads: List[str] = Field(default_factory=list)
+    investigate_areas: List[str] = Field(default_factory=list)
+
+
 class ThreadDumpAnalysis(BaseModel):
     summary: str
     key_findings: List[str]
@@ -37,6 +62,13 @@ class ThreadDumpAnalysis(BaseModel):
     top_thread_groups: List[ThreadGroup]
     hotspots: List[ThreadHotspot]
     recommended_actions: List[str]
+    health_assessment: Optional[Literal["Healthy", "Degraded", "Critical"]] = None
+    thread_state_percentages: Optional[Dict[str, float]] = None
+    issues: List[ThreadIssue] = Field(default_factory=list)
+    recommendation_plan: Optional[ThreadRecommendationPlan] = None
+    critical_threads: List[CriticalThreadDetail] = Field(default_factory=list)
+    system_context: List[str] = Field(default_factory=list)
+    narrative_markdown: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -50,4 +82,10 @@ class MultiThreadDumpAnalysis(BaseModel):
     likely_lock_contention: List[str]
     state_changes: Dict[str, List[str]]
     recommended_actions: List[str]
+    health_assessment: Optional[Literal["Healthy", "Degraded", "Critical"]] = None
+    issues: List[ThreadIssue] = Field(default_factory=list)
+    recommendation_plan: Optional[ThreadRecommendationPlan] = None
+    critical_threads: List[CriticalThreadDetail] = Field(default_factory=list)
+    system_context: List[str] = Field(default_factory=list)
+    narrative_markdown: Optional[str] = None
     notes: Optional[str] = None
