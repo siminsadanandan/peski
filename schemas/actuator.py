@@ -60,6 +60,10 @@ class TdaMcpActuatorCaptureRequest(BaseModel):
         default="mcp",
         description="Post-capture processing mode: mcp, llm, or both.",
     )
+    llm_execution_mode: Literal["inline", "background"] = Field(
+        default="inline",
+        description="LLM execution mode for processing_mode values that include llm. background returns early and runs LLM asynchronously.",
+    )
     top_n: int = Field(default=15, ge=5, le=50)
     run_virtual: bool = True
     wrap_if_missing_header: bool = True
@@ -106,6 +110,7 @@ class ActuatorCaptureAnalyzeResponse(BaseModel):
 
     llm_analysis: Optional[Dict[str, Any]] = None
     llm_analysis_saved: bool = False
+    llm_analysis_queued: bool = False
     llm_analysis_error: Optional[str] = None
 
     notes: Optional[str] = None

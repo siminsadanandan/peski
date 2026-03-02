@@ -261,6 +261,9 @@ Request body:
   - `mcp` (default)
   - `llm`
   - `both`
+- Optional `llm_execution_mode` controls LLM latency behavior when mode includes `llm`:
+  - `inline` (default): wait for LLM result in same response.
+  - `background`: return `202 Accepted` after capture/MCP; LLM result is written later to the same run directory.
 
 nsenter notes:
 - `TRACE_NSENTER_ENABLED=true` must be set in environment.
@@ -273,6 +276,13 @@ curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze
   -d '{"actuator_url":"https://example-host/actuator/threaddump","dump_count":3,"interval_sec":5,"auth_mode":"none","processing_mode":"both","run_virtual":true,"additional_trace_options":"ss,netstat","trace_parallel":true}'
 ```
 
+Example (queue LLM in background for webhook-safe response latency):
+```bash
+curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"actuator_url":"https://example-host/actuator/threaddump","processing_mode":"both","llm_execution_mode":"background","dump_count":3,"interval_sec":5}'
+```
+
 Example (nsenter mode with explicit host PID):
 ```bash
 curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
@@ -283,6 +293,7 @@ curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze
 Success response: `ActuatorCaptureAnalyzeResponse`.
 
 Errors: `422` invalid payload/normalization error, `500` boundary guard failure, `502` actuator or TDA MCP dependency failure.
+Status `202` means LLM was accepted for background processing.
 
 ### GET `/v1/alerts/actuator/runs/{run_id}/report`
 Purpose: Render a single captured run as an HTML report directly from local filesystem artifacts.

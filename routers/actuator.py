@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 
 from schemas import (
@@ -121,6 +121,36 @@ def _render_run_report_html(run_dir: pathlib.Path) -> str:
         f"{_section('Error Files', error_files)}"
         "</div></body></html>"
     )
+
+
+def _run_llm_analysis_and_persist(
+    run_dir: pathlib.Path,
+    llm_dumps: List[str],
+    app_hint: str,
+    top_n: int,
+) -> tuple[Optional[dict], bool, Optional[str]]:
+    try:
+        dumps_block = "\n\n===== NEXT DUMP =====\n\n".join([f"### dump[{i}]\n{d}" for i, d in enumerate(llm_dumps)])
+        llm_out = td_multi_chain.invoke({
+            "app_hint": app_hint,
+            "times_utc": [],
+            "top_n": int(top_n),
+            "dump_count": len(llm_dumps),
+            "dumps_block": dumps_block,
+            "format_instructions": td_multi_parser.get_format_instructions(),
+        })
+        if hasattr(llm_out, "model_dump"):
+            llm_analysis = llm_out.model_dump()
+        elif hasattr(llm_out, "dict"):
+            llm_analysis = llm_out.dict()
+        else:
+            llm_analysis = llm_out
+        _safe_write_text(run_dir / "analysis_llm.json", json.dumps(llm_analysis, indent=2))
+        return llm_analysis, True, None
+    except Exception as e:
+        llm_analysis_error = str(e)
+        _safe_write_text(run_dir / "analysis_llm_error.txt", llm_analysis_error)
+        return None, False, llm_analysis_error
 
 
 def _parse_trace_options(raw: str) -> List[str]:
@@ -378,12 +408,17 @@ def capture_external_actuator_threaddumps(req: ExternalActuatorCaptureRequest) -
     response_description="Capture metadata with optional MCP and/or LLM analysis outputs.",
     responses={
         200: {"description": "Thread dumps captured and processed successfully."},
+        202: {"description": "Thread dumps captured; LLM analysis accepted for background processing."},
         422: {"description": "Request payload is invalid or cannot be normalized."},
         500: {"description": "Internal boundary marker guard failed while composing input."},
         502: {"description": "Actuator fetch or downstream dependency failed."},
     },
 )
-async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCaptureAnalyzeResponse:
+async def capture_actuator_threaddumps_tda_mcp(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    response: Response,
+) -> ActuatorCaptureAnalyzeResponse:
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="Request body must be a JSON object.")
@@ -401,6 +436,8 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
     processing_mode = req.processing_mode
     run_mcp = processing_mode in {"mcp", "both"}
     run_llm = processing_mode in {"llm", "both"}
+    llm_execution_mode = req.llm_execution_mode
+    llm_run_background = run_llm and llm_execution_mode == "background"
     trace_options = _parse_trace_options(req.additional_trace_options or "")
 
     raw_files: List[str] = []
@@ -483,6 +520,7 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
     tda_raw = None
     llm_analysis = None
     llm_analysis_saved = False
+    llm_analysis_queued = False
     llm_analysis_error = None
     notes: List[str] = []
 
@@ -519,38 +557,31 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
             pass
 
     if run_llm:
-        try:
-            dumps_block = "\n\n===== NEXT DUMP =====\n\n".join([f"### dump[{i}]\n{d}" for i, d in enumerate(llm_dumps)])
-            llm_out = td_multi_chain.invoke({
-                "app_hint": req.app_hint or "",
-                "times_utc": [],
-                "top_n": int(req.top_n),
-                "dump_count": len(llm_dumps),
-                "dumps_block": dumps_block,
-                "format_instructions": td_multi_parser.get_format_instructions(),
-            })
-            if hasattr(llm_out, "model_dump"):
-                llm_analysis = llm_out.model_dump()
-            elif hasattr(llm_out, "dict"):
-                llm_analysis = llm_out.dict()
+        if llm_run_background:
+            background_tasks.add_task(
+                _run_llm_analysis_and_persist,
+                run_dir=run_dir,
+                llm_dumps=llm_dumps,
+                app_hint=req.app_hint or "",
+                top_n=int(req.top_n),
+            )
+            llm_analysis_queued = True
+            notes.append("LLM analysis queued in background.")
+            response.status_code = 202
+        else:
+            llm_analysis, llm_analysis_saved, llm_analysis_error = _run_llm_analysis_and_persist(
+                run_dir=run_dir,
+                llm_dumps=llm_dumps,
+                app_hint=req.app_hint or "",
+                top_n=int(req.top_n),
+            )
+            if llm_analysis_saved:
+                notes.append("LLM multi-dump analysis completed.")
             else:
-                llm_analysis = llm_out
-            llm_analysis_saved = True
-            notes.append("LLM multi-dump analysis completed.")
-            try:
-                _safe_write_text(run_dir / "analysis_llm.json", json.dumps(llm_analysis, indent=2))
-            except Exception:
-                pass
-        except Exception as e:
-            llm_analysis_error = str(e)
-            notes.append("LLM analysis failed.")
-            try:
-                _safe_write_text(run_dir / "analysis_llm_error.txt", llm_analysis_error)
-            except Exception:
-                pass
+                notes.append("LLM analysis failed.")
 
     return ActuatorCaptureAnalyzeResponse(
-        status="captured+processed",
+        status="captured+processing" if llm_analysis_queued else "captured+processed",
         saved_dir=str(run_dir),
         actuator_url=req.actuator_url,
         files=raw_files,
@@ -566,6 +597,7 @@ async def capture_actuator_threaddumps_tda_mcp(request: Request) -> ActuatorCapt
         tda_raw=tda_raw,
         llm_analysis=llm_analysis,
         llm_analysis_saved=llm_analysis_saved,
+        llm_analysis_queued=llm_analysis_queued,
         llm_analysis_error=llm_analysis_error,
         notes=" ".join(notes) if notes else None,
     )

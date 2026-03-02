@@ -80,6 +80,10 @@ _SCHEMA_PATCHES = {
         },
         "auth_mode": {"description": "Authentication mode: none|basic|bearer|header.", "example": "none"},
         "processing_mode": {"description": "Post-capture processing mode: mcp, llm, or both.", "example": "both"},
+        "llm_execution_mode": {
+            "description": "LLM execution mode for llm/both processing: inline or background.",
+            "example": "background",
+        },
         "top_n": {"description": "Top findings count used by LLM analysis.", "example": 15},
         "target_namespace": {"description": "Target Kubernetes namespace (from alert metadata).", "example": "prod"},
         "target_pod": {"description": "Target Kubernetes pod name (from alert metadata).", "example": "orders-service-7f9cc9f6f4-2lkhj"},
@@ -92,6 +96,7 @@ _SCHEMA_PATCHES = {
         "normalized_text": {"description": "Human-readable normalized TDA analysis summary."},
         "tda_raw": {"description": "Raw tool output payload from TDA MCP pipeline."},
         "llm_analysis": {"description": "Structured LLM multi-dump analysis output."},
+        "llm_analysis_queued": {"description": "Whether LLM analysis was accepted for asynchronous background execution."},
         "llm_analysis_error": {"description": "LLM processing failure reason when available."},
         "prom_files": {"description": "Prometheus metric snapshots captured per dump index when prom_url is provided."},
         "trace_files": {"description": "Additional diagnostics per dump (for example ss/netstat/tcpdump outputs or .error.txt files)."},
