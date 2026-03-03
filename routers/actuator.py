@@ -94,7 +94,7 @@ def _render_run_report_html(run_dir: pathlib.Path) -> str:
     return (
         "<!doctype html>"
         "<html><head><meta charset='utf-8'/>"
-        f"<title>Run Report - {html.escape(run_dir.name)}</title>"
+        f"<title>Performance Incident Diagnostics Bundle - {html.escape(run_dir.name)}</title>"
         "<style>"
         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f6f8fb;color:#0f172a;"
         "margin:0;padding:24px;line-height:1.4}"
@@ -107,7 +107,7 @@ def _render_run_report_html(run_dir: pathlib.Path) -> str:
         ".meta{color:#334155;font-size:12px;margin:0 0 6px}"
         "ul{margin:8px 0 0 18px}"
         "</style></head><body><div class='wrap'>"
-        f"<h1>Actuator Run Report: {html.escape(run_dir.name)}</h1>"
+        f"<h1>Performance Incident Diagnostics Bundle: {html.escape(run_dir.name)}</h1>"
         f"<p class='muted'>Directory: {html.escape(str(run_dir))} | Generated: {generated_utc}</p>"
         "<section><h2>File Index</h2><ul>"
         f"{all_files}"
