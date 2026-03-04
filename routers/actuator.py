@@ -75,8 +75,15 @@ def _render_run_report_html(run_dir: pathlib.Path) -> str:
     llm_files = [p for p in files if p.name in {"analysis_llm.json", "analysis_llm_error.txt"}]
 
     def _section(title: str, items: List[pathlib.Path]) -> str:
+        title_html = html.escape(title)
+        count = len(items)
         if not items:
-            return f"<section><h2>{html.escape(title)}</h2><p>No files.</p></section>"
+            return (
+                "<details class='sec'>"
+                f"<summary><span class='caret'></span><span>{title_html} (0)</span></summary>"
+                "<div class='sec-body'><p>No files.</p></div>"
+                "</details>"
+            )
         body = []
         for p in items:
             preview = html.escape(_file_preview_text(p))
@@ -87,7 +94,12 @@ def _render_run_report_html(run_dir: pathlib.Path) -> str:
                 f"<pre>{preview}</pre>"
                 "</article>"
             )
-        return f"<section><h2>{html.escape(title)}</h2>{''.join(body)}</section>"
+        return (
+            "<details class='sec'>"
+            f"<summary><span class='caret'></span><span>{title_html} ({count})</span></summary>"
+            f"<div class='sec-body'>{''.join(body)}</div>"
+            "</details>"
+        )
 
     generated_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
     all_files = "".join(f"<li>{html.escape(p.name)}</li>" for p in files) or "<li>No files found</li>"
@@ -100,8 +112,15 @@ def _render_run_report_html(run_dir: pathlib.Path) -> str:
         "margin:0;padding:24px;line-height:1.4}"
         ".wrap{max-width:1200px;margin:0 auto}"
         "h1{margin:0 0 8px;font-size:28px}.muted{color:#475569;margin:0 0 20px}"
-        "section{background:#fff;border:1px solid #dbe3ee;border-radius:10px;padding:14px 16px;margin:0 0 14px}"
-        "h2{margin:4px 0 12px;font-size:19px}h3{margin:10px 0 6px;font-size:15px}"
+        ".sec{background:#fff;border:1px solid #dbe3ee;border-radius:10px;padding:0;margin:0 0 14px;overflow:hidden}"
+        ".sec>summary{list-style:none;cursor:pointer;padding:12px 16px;font-weight:600;font-size:17px;"
+        "display:flex;align-items:center;gap:8px;background:#f8fafc;border-bottom:1px solid #e2e8f0}"
+        ".sec>summary::-webkit-details-marker{display:none}"
+        ".caret{display:inline-block;width:0;height:0;border-top:6px solid transparent;border-bottom:6px solid transparent;"
+        "border-left:8px solid #334155;transition:transform .15s ease}"
+        ".sec[open] .caret{transform:rotate(90deg)}"
+        ".sec-body{padding:12px 16px}"
+        "h3{margin:10px 0 6px;font-size:15px}"
         "pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;border:1px solid #e2e8f0;"
         "padding:10px;border-radius:8px;max-height:340px;overflow:auto}"
         ".meta{color:#334155;font-size:12px;margin:0 0 6px}"
@@ -109,9 +128,9 @@ def _render_run_report_html(run_dir: pathlib.Path) -> str:
         "</style></head><body><div class='wrap'>"
         f"<h1>Performance Incident Diagnostics Bundle: {html.escape(run_dir.name)}</h1>"
         f"<p class='muted'>Directory: {html.escape(str(run_dir))} | Generated: {generated_utc}</p>"
-        "<section><h2>File Index</h2><ul>"
+        "<details class='sec' open><summary><span class='caret'></span><span>File Index</span></summary><div class='sec-body'><ul>"
         f"{all_files}"
-        "</ul></section>"
+        "</ul></div></details>"
         f"{_section('Thread Dump Raw Files', dump_files)}"
         f"{_section('Thread Dump Converted Files', conv_files)}"
         f"{_section('Prometheus Snapshots', prom_files)}"
