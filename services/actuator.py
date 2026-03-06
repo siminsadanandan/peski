@@ -58,6 +58,14 @@ def _build_trace_cmd(option: str, tcpdump_packet_count: int) -> list:
     return commands[opt]
 
 
+def _as_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 def _discover_host_pid(
     target_process_name: Optional[str],
     target_namespace: Optional[str],
@@ -169,7 +177,9 @@ def run_trace_command(
     except FileNotFoundError as e:
         raise RuntimeError(f"Command not found for option '{option}': {e}")
     except subprocess.TimeoutExpired as e:
-        partial = (e.stdout or "") + ("\n" + e.stderr if e.stderr else "")
+        stdout = _as_text(e.stdout).strip()
+        stderr = _as_text(e.stderr).strip()
+        partial = stdout + (f"\n{stderr}" if stderr else "")
         raise RuntimeError(f"Command timed out for option '{option}'. Partial output:\n{partial}")
 
     out = (proc.stdout or "").strip()
