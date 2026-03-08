@@ -64,6 +64,12 @@ class TdaMcpActuatorCaptureRequest(BaseModel):
         default="inline",
         description="LLM execution mode for processing_mode values that include llm. background returns early and runs LLM asynchronously.",
     )
+    llm_max_chars: Optional[int] = Field(
+        default=None,
+        ge=1000,
+        le=5_000_000,
+        description="Optional maximum characters sent to the LLM payload. Applies only to llm/both processing.",
+    )
     top_n: int = Field(default=15, ge=5, le=50)
     run_virtual: bool = True
     wrap_if_missing_header: bool = True
