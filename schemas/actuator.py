@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 class TdaMcpActuatorCaptureRequest(BaseModel):
     actuator_url: str
     prom_url: Optional[str] = Field(default=None, description="Optional Prometheus metrics endpoint to snapshot alongside each dump.")
-    dump_count: int = Field(default=3, ge=2, le=10)
+    dump_count: int = Field(default=3, ge=1, le=10)
     interval_sec: int = Field(default=5, ge=1, le=120)
 
     auth_mode: str = Field(default="none", description="none|basic|bearer|header")
@@ -119,7 +119,7 @@ class ActuatorCaptureAnalyzeResponse(BaseModel):
 class ExternalActuatorCaptureRequest(BaseModel):
     actuator_url: str
     prom_url: Optional[str] = Field(default=None, description="Optional Prometheus metrics endpoint to snapshot alongside each dump.")
-    dump_count: int = Field(default=3, ge=2, le=10)
+    dump_count: int = Field(default=3, ge=1, le=10)
     interval_sec: int = Field(default=5, ge=1, le=120)
 
     auth_mode: str = Field(default="none", description="none|basic|bearer|header")
