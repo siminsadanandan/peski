@@ -264,6 +264,7 @@ Request body:
 - Optional `llm_execution_mode` controls LLM latency behavior when mode includes `llm`:
   - `inline` (default): wait for LLM result in same response.
   - `background`: return `202 Accepted` after capture/MCP; LLM result is written later to the same run directory.
+- Optional `llm_max_chars` limits characters sent to the LLM request payload (`analysis_llm_payload.txt` stores the exact sent payload).
 
 nsenter notes:
 - `TRACE_NSENTER_ENABLED=true` must be set in environment.
@@ -289,6 +290,14 @@ curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze
   -H 'Content-Type: application/json' \
   -d '{"actuator_url":"https://example-host/actuator/threaddump","processing_mode":"both","llm_execution_mode":"background","dump_count":3,"interval_sec":5}'
 ```
+
+Example (limit LLM request payload size and persist exact sent payload):
+```bash
+curl -X POST http://localhost:8080/v1/alerts/actuator/threaddump/capture-analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"actuator_url":"https://example-host/actuator/threaddump","processing_mode":"llm","dump_count":3,"interval_sec":5,"llm_max_chars":120000}'
+```
+Saved payload artifact: `analysis_llm_payload.txt`.
 
 Example (nsenter mode with explicit host PID):
 ```bash

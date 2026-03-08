@@ -84,6 +84,10 @@ _SCHEMA_PATCHES = {
             "description": "LLM execution mode for llm/both processing: inline or background.",
             "example": "background",
         },
+        "llm_max_chars": {
+            "description": "Optional maximum characters sent to the LLM payload for llm/both processing.",
+            "example": 120000,
+        },
         "top_n": {"description": "Top findings count used by LLM analysis.", "example": 15},
         "target_namespace": {"description": "Target Kubernetes namespace (from alert metadata).", "example": "prod"},
         "target_pod": {"description": "Target Kubernetes pod name (from alert metadata).", "example": "orders-service-7f9cc9f6f4-2lkhj"},

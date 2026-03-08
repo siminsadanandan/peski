@@ -72,7 +72,7 @@ def _render_run_report_html(run_dir: pathlib.Path) -> str:
     trace_files = [p for p in files if re.fullmatch(r"dump\d+\.(ss|netstat|tcpdump)\.txt", p.name)]
     error_files = [p for p in files if p.name.endswith(".error.txt")]
     mcp_files = [p for p in files if p.name in {"tda_input_combined.log", "tda_analysis_raw.json", "tda_analysis.txt"}]
-    llm_files = [p for p in files if p.name in {"analysis_llm.json", "analysis_llm_error.txt"}]
+    llm_files = [p for p in files if p.name in {"analysis_llm.json", "analysis_llm_error.txt", "analysis_llm_payload.txt"}]
 
     def _section(title: str, items: List[pathlib.Path]) -> str:
         title_html = html.escape(title)
@@ -147,9 +147,13 @@ def _run_llm_analysis_and_persist(
     llm_dumps: List[str],
     app_hint: str,
     top_n: int,
+    llm_max_chars: Optional[int] = None,
 ) -> tuple[Optional[dict], bool, Optional[str]]:
     try:
         dumps_block = "\n\n===== NEXT DUMP =====\n\n".join([f"### dump[{i}]\n{d}" for i, d in enumerate(llm_dumps)])
+        if isinstance(llm_max_chars, int) and llm_max_chars > 0 and len(dumps_block) > llm_max_chars:
+            dumps_block = dumps_block[:llm_max_chars]
+        _safe_write_text(run_dir / "analysis_llm_payload.txt", dumps_block)
         llm_out = td_multi_chain.invoke({
             "app_hint": app_hint,
             "times_utc": [],
@@ -583,6 +587,7 @@ async def capture_actuator_threaddumps_tda_mcp(
                 llm_dumps=llm_dumps,
                 app_hint=req.app_hint or "",
                 top_n=int(req.top_n),
+                llm_max_chars=req.llm_max_chars,
             )
             llm_analysis_queued = True
             notes.append("LLM analysis queued in background.")
@@ -593,6 +598,7 @@ async def capture_actuator_threaddumps_tda_mcp(
                 llm_dumps=llm_dumps,
                 app_hint=req.app_hint or "",
                 top_n=int(req.top_n),
+                llm_max_chars=req.llm_max_chars,
             )
             if llm_analysis_saved:
                 notes.append("LLM multi-dump analysis completed.")
